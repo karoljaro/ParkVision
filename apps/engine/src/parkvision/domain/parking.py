@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 
+from .types import ParkingId
+
 
 @dataclass(frozen=True, slots=True)
 class Parking:
-    id: str
+    id: ParkingId
     name: str
