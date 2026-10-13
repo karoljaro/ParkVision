@@ -11,6 +11,7 @@ dependencies = [
 dev = [
     "black",
     "flake8",
+    "pytest",
 ]
 
 [tool.black]
@@ -23,3 +24,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/parkvision"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
