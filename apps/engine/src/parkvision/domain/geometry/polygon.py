@@ -16,6 +16,12 @@ class Polygon:
                 f"got {unique_vertices_count}."
             )
 
+        if (area := self.area) <= 1e-12:
+            raise ValueError(
+                "A polygon must have a non-zero area, "
+                f"got {area}."
+            )
+
     @property
     def area(self) -> float:
         next_vertices = self.vertices[1:] + (self.vertices[0],)
