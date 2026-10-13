@@ -1,3 +1,7 @@
 {
-  "python.defaultInterpreterPath": "${workspaceFolder}/apps/engine/.venv/bin/python"
+  "python.defaultInterpreterPath": "${workspaceFolder}/apps/engine/.venv/bin/python",
+  "flake8.args": [
+    "--config",
+    "${workspaceFolder}/apps/engine/.flake8"
+  ]
 }
