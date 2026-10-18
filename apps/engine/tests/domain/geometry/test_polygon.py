@@ -151,7 +151,7 @@ def test_accepts_area_just_above_threshold() -> None:
 
 
 @pytest.mark.parametrize("repeat_first_at_end", [False, True])
-def test_accepts_repeated_vertices_without_changing_area(
+def test_rejects_repeated_vertices(
     triangle_vertices: tuple[Point, ...], repeat_first_at_end: bool
 ) -> None:
     if repeat_first_at_end:
@@ -159,10 +159,8 @@ def test_accepts_repeated_vertices_without_changing_area(
     else:
         vertices = (triangle_vertices[0],) + triangle_vertices
 
-    polygon = Polygon(vertices)
-
-    assert polygon.vertices == vertices
-    assert polygon.area == pytest.approx(0.5)
+    with pytest.raises(ValueError, match="Polygon vertices must be unique"):
+        Polygon(vertices)
 
 
 def test_vertices_are_immutable(triangle_vertices: tuple[Point, ...]) -> None:
