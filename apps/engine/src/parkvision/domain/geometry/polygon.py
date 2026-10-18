@@ -23,6 +23,9 @@ class Polygon:
                 f"got {area}."
             )
 
+        if unique_vertices_count != len(self.vertices):
+            raise ValueError("Polygon vertices must be unique")
+
         if self._has_self_intersections():
             raise ValueError("Polygon must not have self-intersections")
 
