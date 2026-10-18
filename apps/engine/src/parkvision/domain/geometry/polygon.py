@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from .point import Point
-from .predicates import segments_intersect
+from .predicates import segments_intersect, point_on_segment
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +51,15 @@ class Polygon:
         ]
 
         for i in range(count):
+            # Sprawdzanie nakładania się sąsiednich krawędzi
+            a = vertices[(i - 1) % count]
+            b = vertices[i]
+            c = vertices[(i + 1) % count]
+
+            if point_on_segment(a, b, c) or point_on_segment(b, c, a):
+                return True
+
+            # Sprawdzanie przecięć niesąsiednich krawędzi
             for j in range(i + 2, count):
 
                 if i == 0 and j == count - 1:
