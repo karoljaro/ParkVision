@@ -18,10 +18,7 @@ class Polygon:
             )
 
         if (area := self.area) <= 1e-12:
-            raise ValueError(
-                "A polygon must have a non-zero area, "
-                f"got {area}."
-            )
+            raise ValueError("A polygon must have a non-zero area, " f"got {area}.")
 
         if unique_vertices_count != len(self.vertices):
             raise ValueError("Polygon vertices must be unique")
@@ -45,10 +42,7 @@ class Polygon:
         vertices = self.vertices
         count = len(vertices)
 
-        edges = [
-            (vertices[i], vertices[(i + 1) % count])
-            for i in range(count)
-        ]
+        edges = [(vertices[i], vertices[(i + 1) % count]) for i in range(count)]
 
         for i in range(count):
             # Sprawdzanie nakładania się sąsiednich krawędzi
