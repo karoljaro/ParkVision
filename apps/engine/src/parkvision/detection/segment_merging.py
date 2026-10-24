@@ -88,3 +88,23 @@ def projected_segment_gap(first: LineSegment, second: LineSegment) -> float:
     t_second_max = max(t_second_start, t_second_end)
 
     return max(0.0, t_second_min - t_first_max, t_first_min - t_second_max)
+
+
+def can_merge_segments(
+    first: LineSegment,
+    second: LineSegment,
+    angle_tolerance: float,
+    distance_tolerance: float,
+    gap_tolerance: float,
+) -> bool:
+    """Check whether two line segments can be merged."""
+    if not isfinite(gap_tolerance) or gap_tolerance < 0:
+        raise ValueError("Gap tolerance must be finite and non-negative.")
+
+    if not are_nearly_collinear(first, second, angle_tolerance, distance_tolerance):
+        return False
+
+    if projected_segment_gap(first, second) > gap_tolerance:
+        return False
+
+    return True

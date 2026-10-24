@@ -6,6 +6,7 @@ from parkvision.detection.line_segment import LineSegment
 from parkvision.detection.segment_merging import (
     angle_difference,
     are_nearly_collinear,
+    can_merge_segments,
     point_line_distance,
     projected_segment_gap,
     segment_angle,
@@ -326,3 +327,59 @@ def test_projected_segment_gap_rejects_zero_length_segments(
 
     with pytest.raises(ValueError):
         projected_segment_gap(first, second)
+
+
+@pytest.mark.parametrize(
+    ("second_start", "second_end", "expected"),
+    [
+        pytest.param((105.0, 0.0), (200.0, 0.0), True, id="collinear-gap-5"),
+        pytest.param((110.0, 0.0), (200.0, 0.0), True, id="collinear-gap-10"),
+        pytest.param((130.0, 0.0), (200.0, 0.0), False, id="collinear-gap-30"),
+        pytest.param((0.0, 6.0), (100.0, 6.0), False, id="parallel-offset-6"),
+        pytest.param((50.0, 0.0), (150.0, 0.0), True, id="overlapping"),
+        pytest.param((50.0, -50.0), (50.0, 50.0), False, id="large-angle-crossing"),
+    ],
+)
+def test_can_merge_segments_respects_angle_distance_and_gap_tolerances(
+    second_start: tuple[float, float],
+    second_end: tuple[float, float],
+    expected: bool,
+) -> None:
+    first = LineSegment(segment_id=0, start=(0.0, 0.0), end=(100.0, 0.0))
+    second = LineSegment(segment_id=1, start=second_start, end=second_end)
+
+    assert (
+        can_merge_segments(
+            first,
+            second,
+            angle_tolerance=3.0,
+            distance_tolerance=2.0,
+            gap_tolerance=10.0,
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "gap_tolerance",
+    [
+        pytest.param(-1.0, id="negative"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_can_merge_segments_rejects_invalid_gap_tolerance(
+    gap_tolerance: float,
+) -> None:
+    first = LineSegment(segment_id=0, start=(0.0, 0.0), end=(100.0, 0.0))
+    second = LineSegment(segment_id=1, start=(105.0, 0.0), end=(200.0, 0.0))
+
+    with pytest.raises(ValueError):
+        can_merge_segments(
+            first,
+            second,
+            angle_tolerance=3.0,
+            distance_tolerance=2.0,
+            gap_tolerance=gap_tolerance,
+        )
