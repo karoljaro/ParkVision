@@ -3,7 +3,11 @@ from math import cos, radians, sin
 import pytest
 
 from parkvision.detection.line_segment import LineSegment
-from parkvision.detection.segment_merging import angle_difference, segment_angle
+from parkvision.detection.segment_merging import (
+    angle_difference,
+    point_line_distance,
+    segment_angle,
+)
 
 
 @pytest.mark.parametrize(
@@ -58,3 +62,26 @@ def test_angle_difference_is_independent_of_argument_order(
         first, second = second, first
 
     assert angle_difference(first, second) == pytest.approx(expected_difference)
+
+
+@pytest.mark.parametrize(
+    ("point", "expected_distance"),
+    [
+        pytest.param((5.0, 10.0), 0.0, id="point-on-line"),
+        pytest.param((5.0, 5.0), 5.0, id="point-five-pixels-above-line"),
+        pytest.param((15.0, 10.0), 0.0, id="point-beyond-segment-end"),
+    ],
+)
+def test_point_line_distance_measures_distance_to_infinite_line(
+    point: tuple[float, float], expected_distance: float
+) -> None:
+    line = LineSegment(segment_id=0, start=(0.0, 10.0), end=(10.0, 10.0))
+
+    assert point_line_distance(point, line) == pytest.approx(expected_distance)
+
+
+def test_point_line_distance_rejects_zero_length_segment() -> None:
+    line = LineSegment(segment_id=0, start=(2.0, 3.0), end=(2.0, 3.0))
+
+    with pytest.raises(ValueError):
+        point_line_distance((5.0, 8.0), line)
