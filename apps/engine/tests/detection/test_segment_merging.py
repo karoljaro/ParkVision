@@ -3,9 +3,11 @@ from math import cos, radians, sin, sqrt
 import pytest
 
 from parkvision.detection.line_segment import LineSegment
+from parkvision.detection.segment_group import SegmentGroup
 from parkvision.detection.segment_merging import (
     angle_difference,
     are_nearly_collinear,
+    can_join_group,
     can_merge_segments,
     point_line_distance,
     projected_segment_gap,
@@ -383,3 +385,131 @@ def test_can_merge_segments_rejects_invalid_gap_tolerance(
             distance_tolerance=2.0,
             gap_tolerance=gap_tolerance,
         )
+
+
+def test_can_join_group_accepts_candidate_with_one_compatible_member() -> None:
+    existing = LineSegment(segment_id=0, start=(0.0, 0.0), end=(100.0, 0.0))
+    candidate = LineSegment(segment_id=1, start=(105.0, 0.0), end=(200.0, 0.0))
+    group = SegmentGroup(segments=(existing,))
+
+    assert can_join_group(candidate, group, 3.0, 2.0, 10.0) is True
+
+
+@pytest.mark.parametrize(
+    ("candidate_start", "candidate_end", "expected"),
+    [
+        pytest.param(
+            (205.0, 0.0), (300.0, 0.0), True, id="close-to-second-member-only"
+        ),
+        pytest.param((230.0, 0.0), (300.0, 0.0), False, id="gap-exceeds-tolerance"),
+        pytest.param((205.0, 6.0), (300.0, 6.0), False, id="parallel-separate-edge"),
+    ],
+)
+@pytest.mark.parametrize(
+    "reverse_first", [False, True], ids=["first", "first-reversed"]
+)
+@pytest.mark.parametrize(
+    "reverse_second", [False, True], ids=["second", "second-reversed"]
+)
+@pytest.mark.parametrize(
+    "reverse_candidate", [False, True], ids=["candidate", "candidate-reversed"]
+)
+def test_can_join_group_decision_is_independent_of_endpoint_order(
+    candidate_start: tuple[float, float],
+    candidate_end: tuple[float, float],
+    expected: bool,
+    reverse_first: bool,
+    reverse_second: bool,
+    reverse_candidate: bool,
+) -> None:
+    first_start, first_end = (0.0, 0.0), (100.0, 0.0)
+    second_start, second_end = (105.0, 0.0), (200.0, 0.0)
+    if reverse_first:
+        first_start, first_end = first_end, first_start
+    if reverse_second:
+        second_start, second_end = second_end, second_start
+    if reverse_candidate:
+        candidate_start, candidate_end = candidate_end, candidate_start
+    group = SegmentGroup(
+        segments=(
+            LineSegment(segment_id=0, start=first_start, end=first_end),
+            LineSegment(segment_id=1, start=second_start, end=second_end),
+        )
+    )
+    candidate = LineSegment(segment_id=2, start=candidate_start, end=candidate_end)
+
+    assert can_join_group(candidate, group, 3.0, 2.0, 10.0) is expected
+
+
+@pytest.mark.parametrize("reverse_members", [False, True], ids=["A-B", "B-A"])
+def test_can_join_group_prevents_angular_drift(reverse_members: bool) -> None:
+    first = LineSegment(segment_id=0, start=(0.0, 0.0), end=(10.0, 0.0))
+    second = LineSegment(
+        segment_id=1,
+        start=first.end,
+        end=(10.0 + 10.0 * cos(radians(2.0)), 10.0 * sin(radians(2.0))),
+    )
+    candidate = LineSegment(
+        segment_id=2,
+        start=second.end,
+        end=(
+            second.end[0] + 10.0 * cos(radians(4.0)),
+            second.end[1] + 10.0 * sin(radians(4.0)),
+        ),
+    )
+    members = (second, first) if reverse_members else (first, second)
+
+    assert can_join_group(second, SegmentGroup((first,)), 3.0, 2.0, 10.0) is True
+    assert can_join_group(candidate, SegmentGroup((second,)), 3.0, 2.0, 10.0) is True
+    assert can_join_group(candidate, SegmentGroup(members), 3.0, 2.0, 10.0) is False
+    assert can_join_group(candidate, SegmentGroup(members), 5.0, 2.0, 10.0) is True
+
+
+@pytest.mark.parametrize("reverse_members", [False, True], ids=["A-B", "B-A"])
+def test_can_join_group_requires_distance_compatibility_with_every_member(
+    reverse_members: bool,
+) -> None:
+    first = LineSegment(segment_id=0, start=(0.0, 0.0), end=(100.0, 0.0))
+    second = LineSegment(segment_id=1, start=(105.0, 1.5), end=(200.0, 1.5))
+    candidate = LineSegment(segment_id=2, start=(205.0, 3.0), end=(300.0, 3.0))
+    members = (second, first) if reverse_members else (first, second)
+
+    assert can_join_group(second, SegmentGroup((first,)), 3.0, 2.0, 10.0) is True
+    assert can_join_group(candidate, SegmentGroup((second,)), 3.0, 2.0, 10.0) is True
+    assert can_join_group(candidate, SegmentGroup(members), 3.0, 2.0, 10.0) is False
+
+
+def test_can_join_group_rejects_empty_group() -> None:
+    candidate = LineSegment(segment_id=0, start=(0.0, 0.0), end=(100.0, 0.0))
+
+    with pytest.raises(ValueError):
+        can_join_group(candidate, SegmentGroup(segments=()), 3.0, 2.0, 10.0)
+
+
+@pytest.mark.parametrize(
+    "tolerance_name", ["angle_tolerance", "distance_tolerance", "gap_tolerance"]
+)
+@pytest.mark.parametrize(
+    "invalid_tolerance",
+    [
+        pytest.param(-1.0, id="negative"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_can_join_group_rejects_invalid_tolerances(
+    tolerance_name: str, invalid_tolerance: float
+) -> None:
+    existing = LineSegment(segment_id=0, start=(0.0, 0.0), end=(100.0, 0.0))
+    candidate = LineSegment(segment_id=1, start=(105.0, 0.0), end=(200.0, 0.0))
+    group = SegmentGroup(segments=(existing,))
+    tolerances = {
+        "angle_tolerance": 3.0,
+        "distance_tolerance": 2.0,
+        "gap_tolerance": 10.0,
+    }
+    tolerances[tolerance_name] = invalid_tolerance
+
+    with pytest.raises(ValueError):
+        can_join_group(candidate, group, **tolerances)

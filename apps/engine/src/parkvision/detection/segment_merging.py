@@ -1,6 +1,7 @@
 from math import atan2, degrees, isfinite
 
 from .line_segment import LineSegment
+from .segment_group import SegmentGroup
 
 type PixelPoint = tuple[float, float]
 
@@ -108,3 +109,34 @@ def can_merge_segments(
         return False
 
     return True
+
+
+def can_join_group(
+    segment: LineSegment,
+    group: SegmentGroup,
+    angle_tolerance: float,
+    distance_tolerance: float,
+    gap_tolerance: float,
+) -> bool:
+    """Check whether a segment can join an existing group."""
+    if not group.segments:
+        raise ValueError("Segment group must contain at least one segment.")
+
+    if not isfinite(gap_tolerance) or gap_tolerance < 0:
+        raise ValueError("Gap tolerance must be finite and non-negative.")
+
+    if not all(
+        are_nearly_collinear(
+            existing,
+            segment,
+            angle_tolerance,
+            distance_tolerance,
+        )
+        for existing in group.segments
+    ):
+        return False
+
+    return any(
+        projected_segment_gap(existing, segment) <= gap_tolerance
+        for existing in group.segments
+    )
