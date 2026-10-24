@@ -5,6 +5,7 @@ import pytest
 from parkvision.detection.line_segment import LineSegment
 from parkvision.detection.segment_merging import (
     angle_difference,
+    are_nearly_collinear,
     point_line_distance,
     segment_angle,
 )
@@ -85,3 +86,99 @@ def test_point_line_distance_rejects_zero_length_segment() -> None:
 
     with pytest.raises(ValueError):
         point_line_distance((5.0, 8.0), line)
+
+
+@pytest.mark.parametrize(
+    (
+        "second_start",
+        "second_end",
+        "angle_tolerance",
+        "distance_tolerance",
+        "expected",
+    ),
+    [
+        pytest.param((20.0, 0.0), (30.0, 0.0), 0.0, 0.0, True, id="same-line-with-gap"),
+        pytest.param(
+            (0.0, 1.0), (10.0, 1.0), 0.0, 2.0, True, id="parallel-within-distance"
+        ),
+        pytest.param(
+            (0.0, 2.0), (10.0, 2.0), 0.0, 2.0, True, id="distance-at-tolerance"
+        ),
+        pytest.param(
+            (0.0, 3.0), (10.0, 3.0), 0.0, 2.0, False, id="distance-above-tolerance"
+        ),
+        pytest.param(
+            (0.0, 0.0), (10.0, 10.0), 44.0, 100.0, False, id="angle-above-tolerance"
+        ),
+        pytest.param(
+            (0.0, 0.0), (10.0, 10.0), 45.0, 100.0, True, id="angle-at-tolerance"
+        ),
+        pytest.param((0.0, 0.0), (10.0, 1.0), 6.0, 1.0, True, id="nearly-collinear"),
+        pytest.param(
+            (0.0, 1.0), (10.0, 1.0), 0.0, 0.0, False, id="zero-distance-tolerance"
+        ),
+        pytest.param(
+            (0.0, 0.0), (10.0, 1.0), 0.0, 100.0, False, id="zero-angle-tolerance"
+        ),
+        pytest.param(
+            (0.0, 0.0),
+            (1.0, 1.0),
+            45.0,
+            2.0,
+            False,
+            id="short-segment-close-to-long-line-only",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "reverse_first", [False, True], ids=["first", "first-reversed"]
+)
+@pytest.mark.parametrize(
+    "reverse_second", [False, True], ids=["second", "second-reversed"]
+)
+@pytest.mark.parametrize("swap", [False, True], ids=["original-order", "swapped"])
+def test_are_nearly_collinear_is_independent_of_endpoint_and_argument_order(
+    second_start: tuple[float, float],
+    second_end: tuple[float, float],
+    angle_tolerance: float,
+    distance_tolerance: float,
+    expected: bool,
+    reverse_first: bool,
+    reverse_second: bool,
+    swap: bool,
+) -> None:
+    first_start, first_end = (0.0, 0.0), (10.0, 0.0)
+    if reverse_first:
+        first_start, first_end = first_end, first_start
+    if reverse_second:
+        second_start, second_end = second_end, second_start
+    first = LineSegment(segment_id=0, start=first_start, end=first_end)
+    second = LineSegment(segment_id=1, start=second_start, end=second_end)
+    if swap:
+        first, second = second, first
+
+    assert (
+        are_nearly_collinear(first, second, angle_tolerance, distance_tolerance)
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("angle_tolerance", "distance_tolerance"),
+    [
+        pytest.param(-1.0, 1.0, id="negative-angle"),
+        pytest.param(1.0, -1.0, id="negative-distance"),
+        pytest.param(float("nan"), 1.0, id="nan-angle"),
+        pytest.param(1.0, float("nan"), id="nan-distance"),
+        pytest.param(float("inf"), 1.0, id="infinite-angle"),
+        pytest.param(1.0, float("inf"), id="infinite-distance"),
+    ],
+)
+def test_are_nearly_collinear_rejects_invalid_tolerances(
+    angle_tolerance: float, distance_tolerance: float
+) -> None:
+    first = LineSegment(segment_id=0, start=(0.0, 0.0), end=(10.0, 0.0))
+    second = LineSegment(segment_id=1, start=(0.0, 0.0), end=(0.0, 10.0))
+
+    with pytest.raises(ValueError):
+        are_nearly_collinear(first, second, angle_tolerance, distance_tolerance)

@@ -1,4 +1,4 @@
-from math import atan2, degrees
+from math import atan2, degrees, isfinite
 
 from .line_segment import LineSegment
 
@@ -32,3 +32,33 @@ def point_line_distance(point: PixelPoint, line: LineSegment) -> float:
     numerator = abs((bx - ax) * (py - ay) - (by - ay) * (px - ax))
 
     return numerator / line.length
+
+
+def are_nearly_collinear(
+    first: LineSegment,
+    second: LineSegment,
+    angle_tolerance: float,
+    distance_tolerance: float,
+) -> bool:
+    """
+    Determine if two line segments are nearly collinear within the given tolerances.
+    """
+    if not isfinite(angle_tolerance) or angle_tolerance < 0:
+        raise ValueError("Angle tolerance must be finite and non-negative.")
+
+    if not isfinite(distance_tolerance) or distance_tolerance < 0:
+        raise ValueError("Distance tolerance must be finite and non-negative.")
+
+    if angle_difference(first, second) > angle_tolerance:
+        return False
+
+    if point_line_distance(first.start, second) > distance_tolerance:
+        return False
+    if point_line_distance(first.end, second) > distance_tolerance:
+        return False
+    if point_line_distance(second.start, first) > distance_tolerance:
+        return False
+    if point_line_distance(second.end, first) > distance_tolerance:
+        return False
+
+    return True
