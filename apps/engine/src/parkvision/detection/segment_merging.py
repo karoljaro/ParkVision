@@ -62,3 +62,29 @@ def are_nearly_collinear(
         return False
 
     return True
+
+
+def projected_segment_gap(first: LineSegment, second: LineSegment) -> float:
+    """Return the gap between segment projections along the first segment."""
+    if first.length <= 0 or second.length <= 0:
+        raise ValueError("Both segments must have a non-zero length.")
+
+    ux = (first.end[0] - first.start[0]) / first.length
+    uy = (first.end[1] - first.start[1]) / first.length
+
+    t_first_min = 0.0
+    t_first_max = first.length
+
+    v_start_x = second.start[0] - first.start[0]
+    v_start_y = second.start[1] - first.start[1]
+
+    v_end_x = second.end[0] - first.start[0]
+    v_end_y = second.end[1] - first.start[1]
+
+    t_second_start = v_start_x * ux + v_start_y * uy
+    t_second_end = v_end_x * ux + v_end_y * uy
+
+    t_second_min = min(t_second_start, t_second_end)
+    t_second_max = max(t_second_start, t_second_end)
+
+    return max(0.0, t_second_min - t_first_max, t_first_min - t_second_max)
