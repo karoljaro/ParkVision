@@ -1,10 +1,12 @@
 from collections import Counter
+from collections.abc import Callable
 from itertools import permutations
 from math import cos, inf, nextafter, radians, sin, sqrt
 from random import Random
 
 import pytest
 
+from parkvision.detection import segment_merging
 from parkvision.detection.line_segment import LineSegment
 from parkvision.detection.segment_group import SegmentGroup
 from parkvision.detection.segment_merging import (
@@ -683,6 +685,31 @@ def test_group_segments_handles_empty_and_single_segment_input(
     assert group_segments(segments, 0.0, 0.0, 0.0) == expected
 
 
+def test_group_segments_handles_angle_rounded_to_180() -> None:
+    segment = LineSegment(segment_id=0, start=(0.0, 0.0), end=(10.0, -1e-16))
+    assert segment_angle(segment) == 180.0
+
+    groups = group_segments(
+        (segment,), angle_tolerance=3.0, distance_tolerance=2.0, gap_tolerance=12.0
+    )
+
+    assert groups == (SegmentGroup((segment,)),)
+    assert groups[0].segments[0] is segment
+
+
+def test_group_segments_merges_rounded_angle_across_180_boundary() -> None:
+    first = LineSegment(segment_id=0, start=(0.0, 0.0), end=(10.0, -1e-16))
+    second = LineSegment(segment_id=1, start=(12.0, 0.0), end=(22.0, 0.25))
+
+    groups = group_segments(
+        (first, second), angle_tolerance=3.0, distance_tolerance=2.0, gap_tolerance=12.0
+    )
+
+    assert groups == (SegmentGroup((first, second)),)
+    assert groups[0].segments[0] is first
+    assert groups[0].segments[1] is second
+
+
 @pytest.mark.parametrize(
     ("second_start_x", "compatible"),
     [
@@ -1032,3 +1059,176 @@ def test_group_segments_preserves_zero_length_error_for_collinear_pair() -> None
         _legacy_group_segments(segments, 3.0, 2.0, 12.0)
     with pytest.raises(ValueError):
         group_segments(segments, 3.0, 2.0, 12.0)
+
+
+def test_group_segments_does_not_evaluate_unreachable_degenerate_pair() -> None:
+    first, second = (
+        LineSegment(
+            index,
+            (0.0, 0.0),
+            (10.0 * cos(radians(angle)), 10.0 * sin(radians(angle))),
+        )
+        for index, angle in enumerate((4.0, 2.0))
+    )
+    zero = LineSegment(2, (0.0, 0.0), (0.0, 0.0))
+    assert are_nearly_collinear(first, second, 3.0, 2.0)
+    assert not are_nearly_collinear(first, zero, 3.0, 2.0)
+    with pytest.raises(ValueError, match="non-zero length"):
+        are_nearly_collinear(second, zero, 3.0, 2.0)
+
+    # An eager pair index would incorrectly raise on (second, zero), even
+    # though the first member rejects the combined group before that pair.
+    for segments in permutations((first, second, zero)):
+        assert group_segments(segments, 3.0, 2.0, 12.0) == (
+            SegmentGroup((first, second)),
+            SegmentGroup((zero,)),
+        )
+
+
+def test_lazy_group_candidates_revisit_bridge_and_preserve_source_objects() -> None:
+    left = LineSegment(0, (0.0, 0.0), (0.0, 10.0))
+    right = LineSegment(1, (0.0, 30.0), (0.0, 40.0))
+    bridge = LineSegment(2, (0.0, 15.0), (0.0, 25.0))
+    zero = LineSegment(3, (200.0, 200.0), (200.0, 200.0))
+    for segments in permutations((left, right, bridge, zero)):
+        _assert_legacy_groups(segments, (3.0, 2.0, 5.0))
+        assert group_segments(segments, 3.0, 2.0, 5.0) == (
+            SegmentGroup((left, bridge, right)),
+            SegmentGroup((zero,)),
+        )
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "reverse", "merge"),
+    [
+        pytest.param((0.0, float("nan")), (10.0, float("nan")), False, True, id="nan"),
+        pytest.param(
+            (0.0, float("nan")), (10.0, float("nan")), True, True, id="nan-first"
+        ),
+        pytest.param((inf, 0.0), (inf, 10.0), False, False, id="infinite-coordinate"),
+        pytest.param(
+            (inf, 0.0), (inf, 10.0), True, True, id="infinite-coordinate-first"
+        ),
+        pytest.param((-1e308, 0.0), (1e308, 0.0), False, True, id="overflowed-length"),
+        pytest.param(
+            (-1e308, 0.0), (1e308, 0.0), True, True, id="overflowed-length-first"
+        ),
+    ],
+)
+def test_group_segments_preserves_nonfinite_geometry_behavior(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    reverse: bool,
+    merge: bool,
+) -> None:
+    # These acceptance rules, including the directional infinity case, are
+    # compatibility snapshots from the pre-refactor optimized implementation.
+    normal = LineSegment(1 if reverse else 0, (0.0, 0.0), (10.0, 0.0))
+    unusual = LineSegment(0 if reverse else 1, start, end)
+    ordered = (unusual, normal) if reverse else (normal, unusual)
+    expected = (
+        (SegmentGroup(ordered),)
+        if merge
+        else tuple(SegmentGroup((s,)) for s in ordered)
+    )
+    for segments in (ordered, ordered[::-1]):
+        actual = group_segments(segments, 3.0, 2.0, 12.0)
+        assert actual == expected
+        assert Counter(id(s) for g in actual for s in g.segments) == Counter(
+            map(id, segments)
+        )
+
+
+@pytest.mark.parametrize(
+    ("function", "arguments", "tolerances", "message"),
+    [
+        (are_nearly_collinear, "segments", (-1.0, 2.0), "Angle tolerance"),
+        (are_nearly_collinear, "segments", (3.0, -1.0), "Distance tolerance"),
+        (can_merge_segments, "segments", (3.0, 2.0, -1.0), "Gap tolerance"),
+        (can_merge_groups, "groups", (3.0, 2.0, -1.0), "Gap tolerance"),
+        (group_segments, "tuple", (3.0, 2.0, -1.0), "Gap tolerance"),
+    ],
+)
+def test_invalid_tolerance_precedes_degenerate_geometry(
+    function: Callable[..., object],
+    arguments: str,
+    tolerances: tuple[float, ...],
+    message: str,
+) -> None:
+    zero = LineSegment(0, (0.0, 0.0), (0.0, 0.0))
+    if arguments == "segments":
+        inputs = (zero, zero)
+    elif arguments == "groups":
+        inputs = (SegmentGroup((zero,)), SegmentGroup((zero,)))
+    else:
+        inputs = ((zero, zero),)
+    with pytest.raises(ValueError, match=message):
+        function(*inputs, *tolerances)
+
+
+@pytest.mark.parametrize(
+    ("first_angle", "second_angle"),
+    [
+        (0.0, 0.9999999999999999),
+        (0.0, 1.0000000000000002),
+        (-0.001, 0.001),
+        (179.99999999999997, 0.0),
+        (178.5, 0.5),
+        (89.999, 90.001),
+        (0.0, 90.0),
+    ],
+)
+@pytest.mark.parametrize("reverse_endpoints", [False, True])
+def test_group_candidates_preserve_canonical_angular_boundaries(
+    first_angle: float, second_angle: float, reverse_endpoints: bool
+) -> None:
+    segments = []
+    for index, angle in enumerate((first_angle, second_angle)):
+        start = (0.0, 0.0)
+        end = (10 * cos(radians(angle)), 10 * sin(radians(angle)))
+        if reverse_endpoints:
+            start, end = end, start
+        segments.append(LineSegment(index, start, end))
+    boundary = angle_difference(*segments)
+    for tolerance in (nextafter(boundary, 0.0), boundary, nextafter(boundary, inf)):
+        for ordered in permutations(segments):
+            _assert_legacy_groups(ordered, (tolerance, 100.0, 100.0))
+
+
+@pytest.mark.parametrize("angle_tolerance", [90.0, 180.0, 1e308])
+def test_group_candidates_support_large_finite_angle_tolerances(
+    angle_tolerance: float,
+) -> None:
+    segments = tuple(
+        LineSegment(index, (0.0, 0.0), (cos(radians(angle)), sin(radians(angle))))
+        for index, angle in enumerate((0.0, 1.0, 89.0, 90.0, 179.0))
+    )
+    _assert_legacy_groups(segments, (angle_tolerance, 2.0, 0.0))
+    assert group_segments(segments, angle_tolerance, 2.0, 0.0) == (
+        SegmentGroup(segments),
+    )
+
+
+@pytest.mark.parametrize(
+    ("function_name", "replacement_result"),
+    [("are_nearly_collinear", False), ("projected_segment_gap", inf)],
+)
+def test_group_segments_uses_canonical_geometry_functions(
+    monkeypatch: pytest.MonkeyPatch,
+    function_name: str,
+    replacement_result: bool | float,
+) -> None:
+    segments = (
+        LineSegment(0, (0.0, 0.0), (10.0, 0.0)),
+        LineSegment(1, (12.0, 0.0), (20.0, 0.0)),
+    )
+    assert group_segments(segments, 3.0, 2.0, 12.0) == (SegmentGroup(segments),)
+
+    # Replacing a canonical predicate must affect grouping decisions; a hidden
+    # alternative formula would continue to accept this otherwise compatible pair.
+    monkeypatch.setattr(
+        segment_merging, function_name, lambda *args: replacement_result
+    )
+    assert group_segments(segments, 3.0, 2.0, 12.0) == tuple(
+        SegmentGroup((segment,)) for segment in segments
+    )

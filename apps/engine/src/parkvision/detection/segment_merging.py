@@ -1,65 +1,9 @@
-from dataclasses import dataclass
-from math import atan2, degrees, isfinite
+from math import atan2, ceil, degrees, isfinite
 
 from .line_segment import LineSegment
 from .segment_group import SegmentGroup
 
 type PixelPoint = tuple[float, float]
-
-
-@dataclass(frozen=True, slots=True)
-class _SegmentGeometry:
-    segment: LineSegment
-    dx: float
-    dy: float
-    length: float
-    angle: float
-
-    @classmethod
-    def from_segment(cls, segment: LineSegment) -> "_SegmentGeometry":
-        return cls(
-            segment,
-            segment.end[0] - segment.start[0],
-            segment.end[1] - segment.start[1],
-            segment.length,
-            segment_angle(segment),
-        )
-
-    def distance_to_line(self, point: PixelPoint) -> float:
-        if self.length == 0:
-            raise ValueError("Line segment must have a non-zero length.")
-        px, py = point
-        ax, ay = self.segment.start
-        return abs(self.dx * (py - ay) - self.dy * (px - ax)) / self.length
-
-    def gap_to(self, second: "_SegmentGeometry") -> float:
-        if self.length <= 0 or second.length <= 0:
-            raise ValueError("Both segments must have a non-zero length.")
-        ux, uy = self.dx / self.length, self.dy / self.length
-        ax, ay = self.segment.start
-        start_x, start_y = second.segment.start
-        end_x, end_y = second.segment.end
-        start = (start_x - ax) * ux + (start_y - ay) * uy
-        end = (end_x - ax) * ux + (end_y - ay) * uy
-        return max(0.0, min(start, end) - self.length, -max(start, end))
-
-
-def _are_nearly_collinear(
-    first: _SegmentGeometry,
-    second: _SegmentGeometry,
-    angle_tolerance: float,
-    distance_tolerance: float,
-) -> bool:
-    # Keep the public predicate's arithmetic and comparison order at boundaries.
-    difference = abs(first.angle - second.angle)
-    if min(difference, 180 - difference) > angle_tolerance:
-        return False
-    return not (
-        second.distance_to_line(first.segment.start) > distance_tolerance
-        or second.distance_to_line(first.segment.end) > distance_tolerance
-        or first.distance_to_line(second.segment.start) > distance_tolerance
-        or first.distance_to_line(second.segment.end) > distance_tolerance
-    )
 
 
 def segment_angle(segment: LineSegment) -> float:
@@ -205,42 +149,29 @@ def can_merge_groups(
     distance_tolerance: float,
     gap_tolerance: float,
 ) -> bool:
-    """Check all cross pairs, caching geometry within this comparison."""
+    """Check whether two segment groups can be merged."""
     if not first.segments or not second.segments:
         raise ValueError("Both segment groups must contain at least one segment.")
 
     if not isfinite(gap_tolerance) or gap_tolerance < 0:
         raise ValueError("Gap tolerance must be finite and non-negative.")
 
-    # Preserve cheap rejection and validation before preparing larger groups.
-    if not are_nearly_collinear(
-        first.segments[0], second.segments[0], angle_tolerance, distance_tolerance
-    ):
-        return False
-    if len(first.segments) == len(second.segments) == 1:
-        return (
-            projected_segment_gap(first.segments[0], second.segments[0])
-            <= gap_tolerance
-        )
-
-    first_geometry = tuple(map(_SegmentGeometry.from_segment, first.segments))
-    second_geometry = tuple(map(_SegmentGeometry.from_segment, second.segments))
     if not all(
-        _are_nearly_collinear(
+        are_nearly_collinear(
             first_segment,
             second_segment,
             angle_tolerance,
             distance_tolerance,
         )
-        for first_segment in first_geometry
-        for second_segment in second_geometry
+        for first_segment in first.segments
+        for second_segment in second.segments
     ):
         return False
 
     return any(
-        first_segment.gap_to(second_segment) <= gap_tolerance
-        for first_segment in first_geometry
-        for second_segment in second_geometry
+        projected_segment_gap(first_segment, second_segment) <= gap_tolerance
+        for first_segment in first.segments
+        for second_segment in second.segments
     )
 
 
@@ -267,45 +198,61 @@ def group_segments(
         raise ValueError("Gap tolerance must be finite and non-negative.")
 
     ordered = sorted(segments, key=lambda segment: segment.segment_id)
-    geometry = tuple(map(_SegmentGeometry.from_segment, ordered))
-    # The index assumes finite, non-degenerate geometry, as emitted by LSD.
-    # Preserve the original lazy comparisons/errors for other LineSegment inputs.
-    if any(
-        item.length == 0
-        or not isfinite(item.length)
-        or not all(
-            isfinite(value) for value in (*item.segment.start, *item.segment.end)
-        )
-        for item in geometry
-    ):
-        return _group_segments_unindexed(
-            ordered, angle_tolerance, distance_tolerance, gap_tolerance
-        )
+    # Eager pair checks can raise on a degenerate pair that the greedy scan
+    # would never reach. Such inputs use lazy candidates in the same traversal.
+    use_pair_index = all(
+        isfinite(length := segment.length)
+        and length > 0
+        and all(isfinite(value) for value in (*segment.start, *segment.end))
+        for segment in ordered
+    )
 
     count = len(ordered)
     bits = [1 << index for index in range(count)]
     members = bits.copy()
     common = [0] * count
     close = [0] * count
-    for first_index, first in enumerate(geometry):
-        for second_index in range(first_index + 1, count):
-            second = geometry[second_index]
-            # Cached angles reject most pairs before any distance calculations.
-            if not _are_nearly_collinear(
-                first, second, angle_tolerance, distance_tolerance
-            ):
-                continue
-            common[first_index] |= bits[second_index]
-            common[second_index] |= bits[first_index]
-            if first.gap_to(second) <= gap_tolerance:
-                close[first_index] |= bits[second_index]
-            # Projection is directional; later groups can interleave input IDs.
-            if second.gap_to(first) <= gap_tolerance:
-                close[second_index] |= bits[first_index]
+    if use_pair_index:
+        # Cache the canonical angle result only for candidate selection. The
+        # extra bucket on either side makes the index conservative at boundaries;
+        # acceptance always goes through the original geometric functions.
+        angle_bins = [int(segment_angle(segment)) % 180 for segment in ordered]
+        buckets = [0] * 180
+        for index, bucket in enumerate(angle_bins):
+            buckets[bucket] |= bits[index]
+        radius = min(90, ceil(min(angle_tolerance, 90)) + 1)
+        angle_candidates = [0] * 180
+        for bucket in range(180):
+            for offset in range(-radius, radius + 1):
+                angle_candidates[bucket] |= buckets[(bucket + offset) % 180]
+
+        for first_index, first in enumerate(ordered):
+            remaining = angle_candidates[angle_bins[first_index]] & ~(
+                (bits[first_index] << 1) - 1
+            )
+            while remaining:
+                second_bit = remaining & -remaining
+                remaining ^= second_bit
+                second_index = second_bit.bit_length() - 1
+                second = ordered[second_index]
+                if not are_nearly_collinear(
+                    first, second, angle_tolerance, distance_tolerance
+                ):
+                    continue
+                common[first_index] |= bits[second_index]
+                common[second_index] |= bits[first_index]
+                if projected_segment_gap(first, second) <= gap_tolerance:
+                    close[first_index] |= bits[second_index]
+                # Projection is directional; groups can interleave input IDs.
+                if projected_segment_gap(second, first) <= gap_tolerance:
+                    close[second_index] |= bits[first_index]
 
     active = (1 << count) - 1
-    candidates = [close[index] & ~(bits[index] - 1) for index in range(count)]
-    groups = [(segment,) for segment in ordered]
+    candidates = [
+        (close[index] if use_pair_index else active) & ~((bits[index] << 1) - 1)
+        for index in range(count)
+    ]
+    groups: list[tuple[LineSegment, ...]] = [(segment,) for segment in ordered]
 
     while True:
         # Stable root indices have exactly the old list's lexicographic order.
@@ -322,6 +269,16 @@ def group_segments(
         remaining = candidates[first_index] & active
         second_bit = remaining & -remaining
         second_index = second_bit.bit_length() - 1
+        if not use_pair_index and not can_merge_groups(
+            SegmentGroup(groups[first_index]),
+            SegmentGroup(groups[second_index]),
+            angle_tolerance,
+            distance_tolerance,
+            gap_tolerance,
+        ):
+            candidates[first_index] &= ~second_bit
+            continue
+
         groups[first_index] += groups[second_index]
         groups[second_index] = ()
         members[first_index] |= members[second_index]
@@ -336,43 +293,10 @@ def group_segments(
             lower, upper = (
                 (first_index, index) if first_index < index else (index, first_index)
             )
-            if (
+            if not use_pair_index or (
                 common[lower] & members[upper] == members[upper]
                 and close[lower] & members[upper]
             ):
                 candidates[lower] |= bits[upper]
             else:
                 candidates[lower] &= ~bits[upper]
-
-
-def _group_segments_unindexed(
-    segments: list[LineSegment],
-    angle_tolerance: float,
-    distance_tolerance: float,
-    gap_tolerance: float,
-) -> tuple[SegmentGroup, ...]:
-    groups = [SegmentGroup((segment,)) for segment in segments]
-
-    while True:
-        merged = False
-        for first_index in range(len(groups)):
-            for second_index in range(first_index + 1, len(groups)):
-                if can_merge_groups(
-                    groups[first_index],
-                    groups[second_index],
-                    angle_tolerance,
-                    distance_tolerance,
-                    gap_tolerance,
-                ):
-                    groups[first_index] = SegmentGroup(
-                        segments=(
-                            groups[first_index].segments + groups[second_index].segments
-                        )
-                    )
-                    groups.pop(second_index)
-                    merged = True
-                    break
-            if merged:
-                break
-        if not merged:
-            return tuple(groups)
