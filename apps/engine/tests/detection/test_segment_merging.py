@@ -793,3 +793,39 @@ def test_group_segments_uses_id_order_for_ambiguous_greedy_merges() -> None:
 
     for segments in permutations((first, middle, last)):
         assert group_segments(segments, 0.0, 2.0, 0.0) == expected
+
+
+@pytest.mark.parametrize(
+    ("angle_tolerance", "merge_all"),
+    [
+        pytest.param(3.0, False, id="reject-angular-drift"),
+        pytest.param(5.0, True, id="allow-within-relaxed-tolerance"),
+    ],
+)
+def test_group_segments_checks_angular_drift_across_all_members(
+    angle_tolerance: float, merge_all: bool
+) -> None:
+    first = LineSegment(0, (0.0, 0.0), (10.0, 0.0))
+    second = LineSegment(
+        1,
+        first.end,
+        (10.0 + 10.0 * cos(radians(2.0)), 10.0 * sin(radians(2.0))),
+    )
+    third = LineSegment(
+        2,
+        second.end,
+        (
+            second.end[0] + 10.0 * cos(radians(4.0)),
+            second.end[1] + 10.0 * sin(radians(4.0)),
+        ),
+    )
+    assert can_merge_segments(first, second, angle_tolerance, 2.0, 0.0)
+    assert can_merge_segments(second, third, angle_tolerance, 2.0, 0.0)
+    expected = (
+        (SegmentGroup((first, second, third)),)
+        if merge_all
+        else (SegmentGroup((first, second)), SegmentGroup((third,)))
+    )
+
+    for segments in permutations((first, second, third)):
+        assert group_segments(segments, angle_tolerance, 2.0, 0.0) == expected
