@@ -8,6 +8,7 @@ from parkvision.detection.segment_merging import (
     angle_difference,
     are_nearly_collinear,
     can_join_group,
+    can_merge_groups,
     can_merge_segments,
     point_line_distance,
     projected_segment_gap,
@@ -513,3 +514,157 @@ def test_can_join_group_rejects_invalid_tolerances(
 
     with pytest.raises(ValueError):
         can_join_group(candidate, group, **tolerances)
+
+
+@pytest.mark.parametrize(
+    ("second_start_x", "expected"),
+    [
+        pytest.param(105.0, True, id="small-gap"),
+        pytest.param(130.0, False, id="gap-too-large"),
+    ],
+)
+@pytest.mark.parametrize("swap", [False, True], ids=["original-order", "swapped"])
+def test_can_merge_groups_respects_gap_for_collinear_groups(
+    second_start_x: float, expected: bool, swap: bool
+) -> None:
+    first = SegmentGroup((LineSegment(0, (0.0, 0.0), (100.0, 0.0)),))
+    second = SegmentGroup((LineSegment(1, (second_start_x, 0.0), (200.0, 0.0)),))
+    if swap:
+        first, second = second, first
+
+    assert can_merge_groups(first, second, 3.0, 2.0, 10.0) is expected
+
+
+@pytest.mark.parametrize("swap", [False, True], ids=["original-order", "swapped"])
+def test_can_merge_groups_accepts_one_close_pair_despite_other_large_gaps(
+    swap: bool,
+) -> None:
+    first = SegmentGroup(
+        (
+            LineSegment(0, (0.0, 0.0), (100.0, 0.0)),
+            LineSegment(1, (105.0, 0.0), (200.0, 0.0)),
+        )
+    )
+    second = SegmentGroup(
+        (
+            LineSegment(2, (205.0, 0.0), (300.0, 0.0)),
+            LineSegment(3, (305.0, 0.0), (400.0, 0.0)),
+        )
+    )
+    if swap:
+        first, second = second, first
+
+    assert can_merge_groups(first, second, 3.0, 2.0, 10.0) is True
+
+
+@pytest.mark.parametrize(
+    (
+        "middle_start",
+        "middle_end",
+        "last_start",
+        "last_end",
+        "relaxed_angle",
+        "relaxed_distance",
+    ),
+    [
+        pytest.param(
+            (0.0, 0.0),
+            (10.0 * cos(radians(2.0)), 10.0 * sin(radians(2.0))),
+            (0.0, 0.0),
+            (10.0 * cos(radians(4.0)), 10.0 * sin(radians(4.0))),
+            5.0,
+            2.0,
+            id="one-pair-exceeds-angle",
+        ),
+        pytest.param(
+            (0.0, 1.5),
+            (10.0, 1.5),
+            (0.0, 3.0),
+            (10.0, 3.0),
+            3.0,
+            3.0,
+            id="one-pair-exceeds-distance",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "reverse_first", [False, True], ids=["first", "first-reversed"]
+)
+@pytest.mark.parametrize(
+    "reverse_second", [False, True], ids=["second", "second-reversed"]
+)
+def test_can_merge_groups_rejects_one_incompatible_cross_group_pair(
+    middle_start: tuple[float, float],
+    middle_end: tuple[float, float],
+    last_start: tuple[float, float],
+    last_end: tuple[float, float],
+    relaxed_angle: float,
+    relaxed_distance: float,
+    reverse_first: bool,
+    reverse_second: bool,
+) -> None:
+    first_members = (
+        LineSegment(0, (0.0, 0.0), (10.0, 0.0)),
+        LineSegment(1, middle_start, middle_end),
+    )
+    second_members = (
+        LineSegment(2, middle_start, middle_end),
+        LineSegment(3, last_start, last_end),
+    )
+    first = SegmentGroup(first_members[::-1] if reverse_first else first_members)
+    second = SegmentGroup(second_members[::-1] if reverse_second else second_members)
+
+    assert can_merge_groups(first, second, 3.0, 2.0, 10.0) is False
+    assert (
+        can_merge_groups(first, second, relaxed_angle, relaxed_distance, 10.0) is True
+    )
+
+
+@pytest.mark.parametrize(
+    ("empty_first", "empty_second"),
+    [
+        pytest.param(True, False, id="empty-first"),
+        pytest.param(False, True, id="empty-second"),
+        pytest.param(True, True, id="both-empty"),
+    ],
+)
+def test_can_merge_groups_rejects_empty_groups(
+    empty_first: bool, empty_second: bool
+) -> None:
+    first = SegmentGroup(
+        () if empty_first else (LineSegment(0, (0.0, 0.0), (10.0, 0.0)),)
+    )
+    second = SegmentGroup(
+        () if empty_second else (LineSegment(1, (15.0, 0.0), (20.0, 0.0)),)
+    )
+
+    with pytest.raises(ValueError):
+        can_merge_groups(first, second, 3.0, 2.0, 10.0)
+
+
+@pytest.mark.parametrize(
+    "tolerance_name", ["angle_tolerance", "distance_tolerance", "gap_tolerance"]
+)
+@pytest.mark.parametrize(
+    "invalid_tolerance",
+    [
+        pytest.param(-1.0, id="negative"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_can_merge_groups_rejects_invalid_tolerances(
+    tolerance_name: str, invalid_tolerance: float
+) -> None:
+    first = SegmentGroup((LineSegment(0, (0.0, 0.0), (100.0, 0.0)),))
+    second = SegmentGroup((LineSegment(1, (105.0, 0.0), (200.0, 0.0)),))
+    tolerances = {
+        "angle_tolerance": 3.0,
+        "distance_tolerance": 2.0,
+        "gap_tolerance": 10.0,
+    }
+    tolerances[tolerance_name] = invalid_tolerance
+
+    with pytest.raises(ValueError):
+        can_merge_groups(first, second, **tolerances)
