@@ -173,3 +173,49 @@ def can_merge_groups(
         for first_segment in first.segments
         for second_segment in second.segments
     )
+
+
+def group_segments(
+    segments: tuple[LineSegment, ...],
+    angle_tolerance: float,
+    distance_tolerance: float,
+    gap_tolerance: float,
+) -> tuple[SegmentGroup, ...]:
+    """Greedily group compatible segments, starting in segment ID order."""
+    if not isfinite(angle_tolerance) or angle_tolerance < 0:
+        raise ValueError("Angle tolerance must be finite and non-negative.")
+
+    if not isfinite(distance_tolerance) or distance_tolerance < 0:
+        raise ValueError("Distance tolerance must be finite and non-negative.")
+
+    if not isfinite(gap_tolerance) or gap_tolerance < 0:
+        raise ValueError("Gap tolerance must be finite and non-negative.")
+
+    groups = [
+        SegmentGroup(segments=(segment,))
+        for segment in sorted(segments, key=lambda segment: segment.segment_id)
+    ]
+
+    while True:
+        merged = False
+        for first_index in range(len(groups)):
+            for second_index in range(first_index + 1, len(groups)):
+                if can_merge_groups(
+                    groups[first_index],
+                    groups[second_index],
+                    angle_tolerance,
+                    distance_tolerance,
+                    gap_tolerance,
+                ):
+                    groups[first_index] = SegmentGroup(
+                        segments=(
+                            groups[first_index].segments + groups[second_index].segments
+                        )
+                    )
+                    groups.pop(second_index)
+                    merged = True
+                    break
+            if merged:
+                break
+        if not merged:
+            return tuple(groups)

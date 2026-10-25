@@ -1,3 +1,5 @@
+from collections import Counter
+from itertools import permutations
 from math import cos, radians, sin, sqrt
 
 import pytest
@@ -10,6 +12,7 @@ from parkvision.detection.segment_merging import (
     can_join_group,
     can_merge_groups,
     can_merge_segments,
+    group_segments,
     point_line_distance,
     projected_segment_gap,
     segment_angle,
@@ -668,3 +671,125 @@ def test_can_merge_groups_rejects_invalid_tolerances(
 
     with pytest.raises(ValueError):
         can_merge_groups(first, second, **tolerances)
+
+
+@pytest.mark.parametrize("segments", [(), (LineSegment(0, (0.0, 0.0), (10.0, 0.0)),)])
+def test_group_segments_handles_empty_and_single_segment_input(
+    segments: tuple[LineSegment, ...],
+) -> None:
+    expected = tuple(SegmentGroup((segment,)) for segment in segments)
+
+    assert group_segments(segments, 0.0, 0.0, 0.0) == expected
+
+
+@pytest.mark.parametrize(
+    ("second_start_x", "compatible"),
+    [
+        pytest.param(15.0, True, id="compatible-pair"),
+        pytest.param(30.0, False, id="incompatible-pair"),
+    ],
+)
+def test_group_segments_handles_two_segments(
+    second_start_x: float, compatible: bool
+) -> None:
+    first = LineSegment(0, (0.0, 0.0), (10.0, 0.0))
+    second = LineSegment(1, (second_start_x, 0.0), (second_start_x + 10.0, 0.0))
+    expected = (
+        (SegmentGroup((first, second)),)
+        if compatible
+        else (SegmentGroup((first,)), SegmentGroup((second,)))
+    )
+
+    assert group_segments((first, second), 0.0, 0.0, 5.0) == expected
+
+
+@pytest.mark.parametrize("segment_count", [0, 1, 2])
+@pytest.mark.parametrize(
+    "tolerance_name", ["angle_tolerance", "distance_tolerance", "gap_tolerance"]
+)
+@pytest.mark.parametrize(
+    "invalid_tolerance",
+    [
+        pytest.param(-1.0, id="negative"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="positive-infinity"),
+        pytest.param(float("-inf"), id="negative-infinity"),
+    ],
+)
+def test_group_segments_rejects_invalid_tolerances_before_comparing_groups(
+    segment_count: int, tolerance_name: str, invalid_tolerance: float
+) -> None:
+    segments = (
+        LineSegment(0, (0.0, 0.0), (10.0, 0.0)),
+        LineSegment(1, (15.0, 0.0), (25.0, 0.0)),
+    )[:segment_count]
+    tolerances = {
+        "angle_tolerance": 3.0,
+        "distance_tolerance": 2.0,
+        "gap_tolerance": 10.0,
+    }
+    tolerances[tolerance_name] = invalid_tolerance
+
+    with pytest.raises(ValueError):
+        group_segments(segments, **tolerances)
+
+
+@pytest.mark.parametrize("reverse_left", [False, True], ids=["left", "left-reversed"])
+@pytest.mark.parametrize(
+    "reverse_right", [False, True], ids=["right", "right-reversed"]
+)
+@pytest.mark.parametrize(
+    "reverse_bridge", [False, True], ids=["bridge", "bridge-reversed"]
+)
+def test_group_segments_revisits_earlier_pair_after_merging_bridge(
+    reverse_left: bool, reverse_right: bool, reverse_bridge: bool
+) -> None:
+    left_start, left_end = (0.0, 0.0), (10.0, 0.0)
+    right_start, right_end = (30.0, 0.0), (40.0, 0.0)
+    bridge_start, bridge_end = (15.0, 0.0), (25.0, 0.0)
+    if reverse_left:
+        left_start, left_end = left_end, left_start
+    if reverse_right:
+        right_start, right_end = right_end, right_start
+    if reverse_bridge:
+        bridge_start, bridge_end = bridge_end, bridge_start
+    left = LineSegment(0, left_start, left_end)
+    right = LineSegment(1, right_start, right_end)
+    bridge = LineSegment(2, bridge_start, bridge_end)
+
+    assert group_segments((left, right, bridge), 0.0, 0.0, 5.0) == (
+        SegmentGroup((left, bridge, right)),
+    )
+
+
+def test_group_segments_preserves_separate_groups_after_multiple_merges() -> None:
+    segments = (
+        LineSegment(0, (0.0, 0.0), (10.0, 0.0)),
+        LineSegment(1, (0.0, 10.0), (10.0, 10.0)),
+        LineSegment(2, (15.0, 0.0), (25.0, 0.0)),
+        LineSegment(3, (15.0, 10.0), (25.0, 10.0)),
+        LineSegment(4, (0.0, 20.0), (0.0, 30.0)),
+        LineSegment(5, (50.0, 0.0), (60.0, 0.0)),
+    )
+
+    groups = group_segments(segments, 0.0, 0.0, 5.0)
+
+    assert groups == (
+        SegmentGroup((segments[0], segments[2])),
+        SegmentGroup((segments[1], segments[3])),
+        SegmentGroup((segments[4],)),
+        SegmentGroup((segments[5],)),
+    )
+    assert Counter(
+        segment.segment_id for group in groups for segment in group.segments
+    ) == Counter(segment.segment_id for segment in segments)
+
+
+def test_group_segments_uses_id_order_for_ambiguous_greedy_merges() -> None:
+    first = LineSegment(0, (0.0, 0.0), (10.0, 0.0))
+    middle = LineSegment(1, (0.0, 1.5), (10.0, 1.5))
+    last = LineSegment(2, (0.0, 3.0), (10.0, 3.0))
+    expected = (SegmentGroup((first, middle)), SegmentGroup((last,)))
+
+    for segments in permutations((first, middle, last)):
+        assert group_segments(segments, 0.0, 2.0, 0.0) == expected
