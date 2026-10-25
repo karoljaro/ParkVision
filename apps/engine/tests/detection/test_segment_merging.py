@@ -1,6 +1,7 @@
 from collections import Counter
 from itertools import permutations
-from math import cos, radians, sin, sqrt
+from math import cos, inf, nextafter, radians, sin, sqrt
+from random import Random
 
 import pytest
 
@@ -829,3 +830,205 @@ def test_group_segments_checks_angular_drift_across_all_members(
 
     for segments in permutations((first, second, third)):
         assert group_segments(segments, angle_tolerance, 2.0, 0.0) == expected
+
+
+def _legacy_can_merge_groups(
+    first: SegmentGroup,
+    second: SegmentGroup,
+    angle_tolerance: float,
+    distance_tolerance: float,
+    gap_tolerance: float,
+) -> bool:
+    """Independent pre-optimization predicate; keep the public geometry as oracle."""
+    return all(
+        are_nearly_collinear(a, b, angle_tolerance, distance_tolerance)
+        for a in first.segments
+        for b in second.segments
+    ) and any(
+        projected_segment_gap(a, b) <= gap_tolerance
+        for a in first.segments
+        for b in second.segments
+    )
+
+
+def _legacy_group_segments(
+    segments: tuple[LineSegment, ...],
+    angle_tolerance: float,
+    distance_tolerance: float,
+    gap_tolerance: float,
+) -> tuple[SegmentGroup, ...]:
+    """Frozen restart-after-each-merge traversal from the original implementation."""
+    groups = [SegmentGroup((s,)) for s in sorted(segments, key=lambda s: s.segment_id)]
+    while True:
+        merged = False
+        for first in range(len(groups)):
+            for second in range(first + 1, len(groups)):
+                if _legacy_can_merge_groups(
+                    groups[first],
+                    groups[second],
+                    angle_tolerance,
+                    distance_tolerance,
+                    gap_tolerance,
+                ):
+                    groups[first] = SegmentGroup(
+                        groups[first].segments + groups[second].segments
+                    )
+                    groups.pop(second)
+                    merged = True
+                    break
+            if merged:
+                break
+        if not merged:
+            return tuple(groups)
+
+
+def _assert_legacy_groups(
+    segments: tuple[LineSegment, ...], tolerances: tuple[float, float, float]
+) -> None:
+    expected = _legacy_group_segments(segments, *tolerances)
+    actual = group_segments(segments, *tolerances)
+
+    def canonical(groups: tuple[SegmentGroup, ...]) -> list[tuple[int, ...]]:
+        return sorted(tuple(sorted(s.segment_id for s in g.segments)) for g in groups)
+
+    assert canonical(actual) == canonical(expected)
+    assert actual == expected  # Also preserve the exact group and member order.
+    assert Counter(id(s) for g in actual for s in g.segments) == Counter(
+        map(id, segments)
+    )
+
+
+@pytest.mark.parametrize("seed", range(12))
+@pytest.mark.parametrize(
+    "tolerances",
+    [(0.0, 0.0, 0.0), (3.0, 2.0, 12.0), (8.0, 5.0, 20.0), (180.0, 500.0, 500.0)],
+)
+def test_group_segments_matches_legacy_on_seeded_fragment_clouds(
+    seed: int, tolerances: tuple[float, float, float]
+) -> None:
+    random = Random(seed)
+    segments = []
+    for index in range(40):
+        x = float(random.randrange(8) * 15)
+        y = random.choice((0.0, 1.5, 3.0, 40.0))
+        angle = radians(random.choice((0.0, 2.0, 4.0, 90.0, 178.0)))
+        length = random.uniform(5.0, 30.0)
+        start = (x, y)
+        end = (x + length * cos(angle), y + length * sin(angle))
+        if random.choice((True, False)):
+            start, end = end, start
+        segments.append(LineSegment(index * 7 - 20, start, end))
+    random.shuffle(segments)
+
+    _assert_legacy_groups(tuple(segments), tolerances)
+    first, second = SegmentGroup(tuple(segments[:4])), SegmentGroup(
+        tuple(segments[4:8])
+    )
+    assert can_merge_groups(first, second, *tolerances) == _legacy_can_merge_groups(
+        first, second, *tolerances
+    )
+
+
+@pytest.mark.parametrize("offset", [0.0, 2.0, 4.0])
+def test_group_segments_matches_legacy_when_bridge_reopens_earlier_pair(
+    offset: float,
+) -> None:
+    left = LineSegment(0, (0.0, 0.0), (10.0, 0.0))
+    right = LineSegment(1, (30.0, offset), (40.0, offset))
+    bridge = LineSegment(2, (15.0, offset), (25.0, offset))
+    for segments in permutations((left, right, bridge)):
+        _assert_legacy_groups(segments, (0.0, 2.0, 5.0))
+    if offset <= 2:
+        assert group_segments((left, right, bridge), 0.0, 2.0, 5.0) == (
+            SegmentGroup((left, bridge, right)),
+        )
+
+
+def test_group_segments_matches_legacy_for_nontransitive_angles() -> None:
+    segments = tuple(
+        LineSegment(index, (0.0, 0.0), (10 * cos(radians(a)), 10 * sin(radians(a))))
+        for index, a in enumerate((0.0, 2.0, 4.0))
+    )
+    assert are_nearly_collinear(segments[0], segments[1], 3.0, 2.0)
+    assert are_nearly_collinear(segments[1], segments[2], 3.0, 2.0)
+    assert not are_nearly_collinear(segments[0], segments[2], 3.0, 2.0)
+    for ordered in permutations(segments):
+        _assert_legacy_groups(ordered, (3.0, 2.0, 12.0))
+        assert len(group_segments(ordered, 3.0, 2.0, 12.0)) == 2
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_group_segments_preserves_directional_projection_at_gap_boundary(
+    reverse: bool,
+) -> None:
+    first = LineSegment(5, (0.0, 0.0), (100.0, 0.0))
+    second = LineSegment(9, (110.0, 20.0), (150.0, 60.0))
+    if reverse:
+        first, second = (
+            LineSegment(9, first.start, first.end),
+            LineSegment(5, second.start, second.end),
+        )
+    for gap in (10.0, nextafter(10.0, 0.0), 15.0 * sqrt(2.0)):
+        _assert_legacy_groups((first, second), (45.0, 200.0, gap))
+
+
+@pytest.mark.parametrize("boundary", ["angle", "distance", "gap"])
+def test_cached_group_geometry_matches_legacy_at_float_boundaries(
+    boundary: str,
+) -> None:
+    first = LineSegment(0, (1.25, 2.5), (31.25, 2.5))
+    second = LineSegment(1, (36.25, 3.0), (66.25, 4.0))
+    values = [
+        angle_difference(first, second),
+        max(
+            point_line_distance(first.start, second),
+            point_line_distance(first.end, second),
+            point_line_distance(second.start, first),
+            point_line_distance(second.end, first),
+        ),
+        projected_segment_gap(first, second),
+    ]
+    index = ("angle", "distance", "gap").index(boundary)
+    for direction in (0.0, inf):
+        tolerances = values.copy()
+        tolerances[index] = nextafter(values[index], direction)
+        _assert_legacy_groups((first, second), tuple(tolerances))
+        assert can_merge_groups(
+            SegmentGroup((first,)), SegmentGroup((second,)), *tolerances
+        ) == _legacy_can_merge_groups(
+            SegmentGroup((first,)), SegmentGroup((second,)), *tolerances
+        )
+    _assert_legacy_groups((first, second), tuple(values))
+
+
+def test_group_segments_preserves_duplicate_ids_and_repeated_source_objects() -> None:
+    repeated = LineSegment(10, (0.0, 0.0), (10.0, 0.0))
+    segments = (repeated, LineSegment(10, (30.0, 0.0), (40.0, 0.0)), repeated)
+    _assert_legacy_groups(segments, (3.0, 2.0, 12.0))
+
+
+@pytest.mark.parametrize(
+    "segments",
+    [
+        (LineSegment(0, (0.0, 0.0), (0.0, 0.0)),),
+        (
+            LineSegment(0, (0.0, 0.0), (0.0, 0.0)),
+            LineSegment(1, (0.0, 0.0), (0.0, 10.0)),
+        ),
+    ],
+)
+def test_group_segments_preserves_lazy_zero_length_handling(
+    segments: tuple[LineSegment, ...],
+) -> None:
+    _assert_legacy_groups(segments, (3.0, 2.0, 12.0))
+
+
+def test_group_segments_preserves_zero_length_error_for_collinear_pair() -> None:
+    segments = (
+        LineSegment(0, (0.0, 0.0), (0.0, 0.0)),
+        LineSegment(1, (0.0, 0.0), (10.0, 0.0)),
+    )
+    with pytest.raises(ValueError):
+        _legacy_group_segments(segments, 3.0, 2.0, 12.0)
+    with pytest.raises(ValueError):
+        group_segments(segments, 3.0, 2.0, 12.0)
