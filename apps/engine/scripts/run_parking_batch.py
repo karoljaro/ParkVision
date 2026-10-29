@@ -14,6 +14,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from parkvision.capture.frame import Frame
+from parkvision.detection.line_fitting import fit_group_line
+from parkvision.detection.line_segment import LineSegment
 from parkvision.detection.opencv_slot_detector import OpenCVSlotDetector
 from parkvision.detection.segment_group import SegmentGroup
 from parkvision.detection.segment_merging import group_segments
@@ -53,8 +55,32 @@ def render_groups(
     return preview
 
 
+def render_fitted_lines(
+    image: NDArray[np.uint8], fitted_lines: tuple[LineSegment, ...]
+) -> NDArray[np.uint8]:
+    """Show fitted extents separately from the gap-preserving source preview."""
+    preview = image.copy()
+    for line in fitted_lines:
+        start = tuple(round(value * 256) for value in line.start)
+        end = tuple(round(value * 256) for value in line.end)
+        cv2.line(preview, start, end, (0, 255, 255), 1, cv2.LINE_AA, shift=8)
+    cv2.putText(
+        preview,
+        "Fitted extents (may span gaps)",
+        (10, 22),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    return preview
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Save LSD segments and previews.")
+    parser = argparse.ArgumentParser(
+        description="Save LSD segments, source groups and fitted extent previews."
+    )
     parser.add_argument(
         "--samples",
         type=Path,
@@ -170,6 +196,17 @@ def main() -> None:
         if not cv2.imwrite(str(groups_path), render_groups(image, groups)):
             raise OSError(f"Nie udało się zapisać podglądu: {groups_path}")
 
+        # Allocate derived IDs above the entire extraction, including other groups.
+        # Representatives stay separate; never replace or regroup source fragments.
+        first_fitted_id = max((s.segment_id for s in segments), default=-1) + 1
+        fitted_lines = tuple(
+            fit_group_line(group, segment_id=first_fitted_id + group_index)
+            for group_index, group in enumerate(groups)
+        )
+        fitted_path = output_dir / "preview_fitted_lines.png"
+        if not cv2.imwrite(str(fitted_path), render_fitted_lines(image, fitted_lines)):
+            raise OSError(f"Nie udało się zapisać podglądu: {fitted_path}")
+
         multi_count = sum(len(group.segments) > 1 for group in groups)
         single_count = len(groups) - multi_count
         largest_group = max((len(group.segments) for group in groups), default=0)
@@ -177,6 +214,9 @@ def main() -> None:
             f"  Groups: {len(groups)} total, {multi_count} multi-segment, "
             f"{single_count} single-segment, largest: {largest_group}; "
             f"grouping: {grouping_seconds:.3f} s"
+        )
+        print(
+            f"  Fitted extents: {len(fitted_lines)} (may span gaps): {fitted_path.name}"
         )
 
     print(f"Gotowe. Wyniki: {results_dir}")

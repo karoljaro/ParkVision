@@ -8,8 +8,10 @@ import pytest
 from numpy.typing import NDArray
 
 from parkvision.capture.frame import Frame
+from parkvision.detection.line_fitting import fit_group_line
 from parkvision.detection.line_segment import LineSegment
 from parkvision.detection.opencv_slot_detector import OpenCVSlotDetector
+from parkvision.detection.segment_merging import group_segments
 from parkvision.detection.slot_detector import SlotDetector
 
 
@@ -76,6 +78,31 @@ def test_segment_ids_restart_for_each_extraction(marked_frame: Frame) -> None:
     assert second
     assert [segment.segment_id for segment in first] == list(range(len(first)))
     assert [segment.segment_id for segment in second] == list(range(len(second)))
+
+
+def test_extracted_segments_can_be_grouped_and_fitted(marked_frame: Frame) -> None:
+    sources = OpenCVSlotDetector().extract_segments(marked_frame)
+    groups = group_segments(sources, 3.0, 2.0, 12.0)
+    first_id = max(s.segment_id for s in sources) + 1
+
+    fitted = tuple(
+        fit_group_line(group, segment_id=first_id + i) for i, group in enumerate(groups)
+    )
+
+    # Check useful geometry, without depending on exact LSD fragment counts/values.
+    assert any(
+        line.length > 180 and abs(line.start[1] - 60) < 5 and abs(line.end[1] - 60) < 5
+        for line in fitted
+    )
+    assert len(fitted) == len(groups)
+    assert all(line.length > 0 for line in fitted)
+    assert {line.segment_id for line in fitted}.isdisjoint(
+        s.segment_id for s in sources
+    )
+    assert all(
+        any(s is member for group in groups for member in group.segments)
+        for s in sources
+    )
 
 
 def test_extraction_preserves_input_and_writes_no_files(
