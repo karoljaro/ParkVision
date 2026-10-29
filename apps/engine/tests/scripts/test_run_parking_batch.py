@@ -240,3 +240,165 @@ def test_rejects_invalid_pairing_options_before_writing_outputs(
         runpy.run_path(str(script), run_name="__main__")
     assert error.value.code == 2
     assert not output_path.exists()
+
+
+def test_optional_topology_preserves_previous_files_and_links_gaps_axes_and_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image = np.zeros((280, 300, 3), dtype=np.uint8)
+    sample_path = tmp_path / "sample.png"
+    assert cv2.imwrite(str(sample_path), image)
+    sources = (
+        LineSegment(0, (20, 140), (59, 140)),
+        LineSegment(1, (67, 140), (180, 140)),
+        LineSegment(2, (20, 146), (59, 146)),
+        LineSegment(3, (67, 146), (180, 146)),
+        LineSegment(4, (60, 100), (60, 210)),
+        LineSegment(5, (66, 100), (66, 210)),
+        LineSegment(6, (180, 100), (180, 210)),  # Unpaired curb context.
+        LineSegment(7, (220, 240), (230, 240)),  # Short isolated edge is retained.
+    )
+    monkeypatch.setattr(OpenCVSlotDetector, "extract_segments", lambda *_: sources)
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_parking_batch.py"
+    results = []
+    for name, options in (
+        ("old", []),
+        (
+            "new",
+            [
+                "--topology",
+                "--topology-endpoint-tolerance",
+                "2",
+                "--topology-max-extension",
+                "4",
+                "--topology-min-crossing-angle",
+                "20",
+                "--topology-dedup-radius",
+                "2",
+                "--topology-min-context-length",
+                "40",
+            ],
+        ),
+    ):
+        output = tmp_path / name
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                str(script),
+                "--samples",
+                str(sample_path),
+                "--output",
+                str(output),
+                *options,
+            ],
+        )
+        runpy.run_path(str(script), run_name="__main__")
+        results.append(output / "image-1")
+    old, new = results
+    for path in old.iterdir():
+        assert path.read_bytes() == (new / path.name).read_bytes()
+    assert {path.name for path in new.iterdir()} - {
+        path.name for path in old.iterdir()
+    } == {"topology.json", "preview_topology_candidates.png"}
+    data = json.loads((new / "topology.json").read_text())
+    markings = json.loads((new / data["provenance_file"]).read_text())
+    raw = json.loads((new / data["source_segments_file"]).read_text())
+    assert data["parameters"] == {
+        "endpoint_tolerance_px": 2,
+        "max_extension_px": 4,
+        "min_crossing_angle": 20,
+        "dedup_radius_px": 2,
+        "min_context_length_px": 40,
+    }
+    assert "NOT checked" in data["interpretation"]
+    assert len(data["lines"]) == 4 and len(data["endpoints"]) == 8
+    assert len(data["junctions"]) == 2
+    assert data["junctions"][0]["position"] == pytest.approx((63, 143))
+    assert data["junctions"][1]["position"] == pytest.approx((180, 143))
+    hits = [hit for node in data["junctions"] for hit in node["intersections"]]
+    assert [hit["topology"] for hit in hits] == ["X", "T"]
+    assert [hit["uses_unpaired_context"] for hit in hits] == [False, True]
+    assert all(not hit["hypothetical"] for hit in hits)
+    line_ids = {line["segment_id"] for line in data["lines"]}
+    assert all(set(hit["line_ids"]) <= line_ids for hit in hits)
+    for line in data["lines"]:
+        groups = [markings["groups"][i] for i in line["group_indices"]]
+        source_ids = {s for group in groups for s in group["source_segment_ids"]}
+        assert source_ids <= {s["segment_id"] for s in raw["segments"]}
+        if line["kind"] == "axis":
+            assert any(
+                p["centerline"]["segment_id"] == line["pair_centerline_id"]
+                for p in markings["pairs"]
+            )
+        else:
+            assert line["segment_id"] in markings["unpaired_edge_ids"]
+    # The exact X lies in an unobserved horizontal source gap. It is a candidate.
+    groups_preview = cv2.imread(str(new / "preview_groups.png"))
+    assert groups_preview is not None
+    assert not groups_preview[140, 63].any()
+    preview = cv2.imread(str(new / "preview_topology_candidates.png"))
+    assert preview is not None and preview.shape == image.shape
+    assert preview[143, 68].any()
+    assert any(not endpoint["junction_ids"] for endpoint in data["endpoints"])
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_topology_runs_through_actual_lsd_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marked: bool
+) -> None:
+    image = np.zeros((280, 320, 3), dtype=np.uint8)
+    if marked:
+        cv2.rectangle(image, (40, 135), (280, 143), (255, 255, 255), -1)
+        cv2.rectangle(image, (155, 60), (163, 230), (255, 255, 255), -1)
+    sample = tmp_path / "sample.png"
+    assert cv2.imwrite(str(sample), image)
+    output = tmp_path / "output"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_parking_batch.py"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(script), "--samples", str(sample), "--output", str(output), "--topology"],
+    )
+    runpy.run_path(str(script), run_name="__main__")
+    result = output / "image-1"
+    data = json.loads((result / "topology.json").read_text())
+    if marked:
+        assert len(data["lines"]) >= 2
+        assert len(data["endpoints"]) == 2 * len(data["lines"])
+        assert any(
+            abs(node["position"][0] - 159) < 1
+            and abs(node["position"][1] - 139) < 1
+            and any(
+                hit["topology"] == "X" and not hit["hypothetical"]
+                for hit in node["intersections"]
+            )
+            for node in data["junctions"]
+        )
+    else:
+        assert data["lines"] == data["junctions"] == data["endpoints"] == []
+    assert cv2.imread(str(result / "preview_topology_candidates.png")) is not None
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--topology-endpoint-tolerance", "-1"),
+        ("--topology-max-extension", "nan"),
+        ("--topology-min-crossing-angle", "0"),
+        ("--topology-min-crossing-angle", "91"),
+        ("--topology-dedup-radius", "inf"),
+        ("--topology-min-context-length", "-1"),
+    ],
+)
+def test_rejects_invalid_topology_options_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: str, value: str
+) -> None:
+    output = tmp_path / "output"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_parking_batch.py"
+    monkeypatch.setattr(
+        sys, "argv", [str(script), "--output", str(output), "--topology", flag, value]
+    )
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(script), run_name="__main__")
+    assert error.value.code == 2 and not output.exists()
