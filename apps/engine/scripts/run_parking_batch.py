@@ -24,6 +24,8 @@ from parkvision.detection.opencv_slot_detector import OpenCVSlotDetector
 from parkvision.detection.segment_group import SegmentGroup
 from parkvision.detection.segment_merging import group_segments
 from parkvision.detection.topology_candidate import TopologyCandidates
+from parkvision.detection.topology_support import IntersectionSourceSupport
+from parkvision.detection.topology_support_measurement import measure_topology_support
 
 
 def image_sort_key(path: Path) -> list[str | int]:
@@ -191,7 +193,7 @@ def save_topology_diagnostics(
     fitted_lines: tuple[LineSegment, ...],
     pairs: tuple[MarkingPair, ...],
     parameters: dict[str, float],
-) -> None:
+) -> TopologyCandidates:
     """Use the public API and link to existing, unchanged provenance files."""
     # Paired edges are represented by their axis; only unmatched edges add context.
     unpaired = _unpaired_lines(fitted_lines, pairs)
@@ -207,6 +209,179 @@ def save_topology_diagnostics(
         f"  Topology candidates: {len(result.junctions)} nodes, "
         f"{len(result.endpoints)} endpoints; geometry: {elapsed:.3f} s; {path.name}"
     )
+    return result
+
+
+def save_topology_support_diagnostics(
+    image: NDArray[np.uint8],
+    output_dir: Path,
+    result: TopologyCandidates,
+    pairs: tuple[MarkingPair, ...],
+    source_groups: dict[int, SegmentGroup],
+    parameters: dict[str, float],
+) -> None:
+    """Add two opt-in files; preserve the nine existing diagnostics byte for byte."""
+    # 1. Measure support using the existing topology and unchanged source groups.
+    measurements = measure_topology_support(result, pairs, source_groups, **parameters)
+
+    # 2. Save each exact intersection, including its source IDs and window coverage.
+    intersection_records = [
+        _intersection_support_data(measurement) for measurement in measurements
+    ]
+    _write_json(
+        output_dir / "topology_support.json",
+        {
+            "schema_version": 1,
+            "coordinate_system": "pixels",
+            "interpretation": (
+                "longitudinal raw LSD interval support only; NOT paint confirmation; "
+                "both signed arms retained, windows not clipped to fitted extents; "
+                "no candidate or line is filtered"
+            ),
+            "topology_file": "topology.json",
+            "provenance_file": "markings.json",
+            "source_segments_file": "segments.json",
+            "parameters": parameters,
+            "intersections": intersection_records,
+        },
+        allow_nan=False,
+    )
+
+    # 3. Render a separate preview after saving the machine-readable evidence.
+    preview = render_topology_support(image, result, measurements, source_groups)
+    _write_preview(
+        output_dir / "preview_topology_support.png",
+        preview,
+    )
+    print(f"  Source support: {len(measurements)} pairwise hits; topology_support.json")
+
+
+def _intersection_support_data(
+    measurement: IntersectionSourceSupport,
+) -> dict[str, object]:
+    """Serialize one measurement and include the computed coverage properties."""
+    intersection_record = asdict(measurement)
+    for line_support, line_record in zip(
+        measurement.lines, intersection_record["lines"]
+    ):
+        for edge_support, edge_record in zip(line_support.edges, line_record["edges"]):
+            # asdict() handles stored fields; properties need to be added explicitly.
+            windows = (
+                ("junction", edge_support.junction),
+                ("before", edge_support.before),
+                ("after", edge_support.after),
+            )
+            for window_name, window_support in windows:
+                window_record = edge_record[window_name]
+                window_record["coverage_ratio"] = window_support.coverage_ratio
+    return intersection_record
+
+
+def render_topology_support(
+    image: NDArray[np.uint8],
+    result: TopologyCandidates,
+    support: tuple[IntersectionSourceSupport, ...],
+    source_groups: dict[int, SegmentGroup],
+) -> NDArray[np.uint8]:
+    """Show unchanged raw fragments participating in local windows, never axes."""
+    # 1. Select the raw fragments that contribute to any of the measured windows.
+    preview = image.copy()
+    supporting_source_ids = _supporting_source_ids(support)
+
+    # 2. Draw their original endpoints, preserving gaps between separate fragments.
+    for group in source_groups.values():
+        for segment in group.segments:
+            if segment.segment_id not in supporting_source_ids:
+                continue
+            start_point = tuple(round(value * 256) for value in segment.start)
+            end_point = tuple(round(value * 256) for value in segment.end)
+            cv2.line(
+                preview,
+                start_point,
+                end_point,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+                shift=8,
+            )
+
+    # 3. Label each exact intersection, even when several share one junction node.
+    _draw_support_intersections(preview, result, support)
+
+    # 4. Explain how raw fragments and per-edge coverage are represented.
+    for row, label in enumerate(
+        (
+            "Yellow: raw LSD fragments overlapping local windows; no paint test",
+            "J%: longitudinal coverage per edge, grouped by line; arms in JSON",
+        )
+    ):
+        cv2.putText(
+            preview,
+            label,
+            (10, 22 + 20 * row),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+    return preview
+
+
+def _draw_support_intersections(
+    preview: NDArray[np.uint8],
+    result: TopologyCandidates,
+    support: tuple[IntersectionSourceSupport, ...],
+) -> None:
+    """Draw exact hit positions and their per-edge junction coverage in place."""
+    junctions_by_id = {junction.candidate_id: junction for junction in result.junctions}
+    for measurement in support:
+        junction = junctions_by_id[measurement.candidate_id]
+        intersection = junction.intersections[measurement.intersection_index]
+        x, y = (round(value) for value in intersection.position)
+        if not (0 <= x < preview.shape[1] and 0 <= y < preview.shape[0]):
+            continue
+
+        # '/' separates source edges of one line; '|' separates the two lines.
+        line_coverages = []
+        for line_support in measurement.lines:
+            edge_percentages = [
+                f"{edge.junction.coverage_ratio * 100:.0f}"
+                for edge in line_support.edges
+            ]
+            line_coverages.append("/".join(edge_percentages))
+        coverage_label = "|".join(line_coverages)
+        label = (
+            f"{measurement.candidate_id}:{measurement.intersection_index} "
+            f"J[{coverage_label}]%"
+        )
+        label_position = (x + 6, y - 6 - 14 * measurement.intersection_index)
+
+        cv2.circle(preview, (x, y), 4, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            preview,
+            label,
+            label_position,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.35,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def _supporting_source_ids(
+    measurements: tuple[IntersectionSourceSupport, ...],
+) -> set[int]:
+    """Collect contributing raw LSD IDs from the junction and both signed arms."""
+    source_ids: set[int] = set()
+    for measurement in measurements:
+        for line_support in measurement.lines:
+            for edge_support in line_support.edges:
+                source_ids.update(edge_support.junction.source_segment_ids)
+                source_ids.update(edge_support.before.source_segment_ids)
+                source_ids.update(edge_support.after.source_segment_ids)
+    return source_ids
 
 
 def topology_data(
@@ -272,7 +447,11 @@ def _topology_line_data(
     }
 
 
-def parse_arguments() -> tuple[argparse.Namespace, dict[str, float], dict[str, float]]:
+def parse_arguments() -> (
+    tuple[
+        argparse.Namespace, dict[str, float], dict[str, float], dict[str, float] | None
+    ]
+):
     """Read and validate all options before accessing images or writing outputs."""
     parser = argparse.ArgumentParser(
         description="Save LSD, groups, fitted extents and marking-axis hypotheses."
@@ -351,6 +530,13 @@ def parse_arguments() -> tuple[argparse.Namespace, dict[str, float], dict[str, f
         default=30.0,
         help="Minimum unmatched-edge length for endpoint context; all are retained.",
     )
+    parser.add_argument(
+        "--topology-support",
+        action="store_true",
+        help="Add raw LSD support JSON/preview; requires --topology.",
+    )
+    parser.add_argument("--support-junction-radius", type=float, default=3.0)
+    parser.add_argument("--support-arm-length", type=float, default=15.0)
     # Reuse public algorithm validation on empty input before accessing any files.
     args = parser.parse_args()
     if not isfinite(args.min_length) or args.min_length < 0:
@@ -378,7 +564,24 @@ def parse_arguments() -> tuple[argparse.Namespace, dict[str, float], dict[str, f
         find_topology_candidates((), **topology_parameters)
     except ValueError as error:
         parser.error(f"Invalid topology parameters: {error}")
-    return args, pairing_parameters, topology_parameters
+    if args.topology_support and not args.topology:
+        parser.error("--topology-support requires --topology")
+    support_parameters = {
+        "junction_radius_px": args.support_junction_radius,
+        "arm_length_px": args.support_arm_length,
+    }
+    try:
+        measure_topology_support(
+            TopologyCandidates((), (), (), ()), (), {}, **support_parameters
+        )
+    except ValueError as error:
+        parser.error(f"Invalid source support parameters: {error}")
+    return (
+        args,
+        pairing_parameters,
+        topology_parameters,
+        (support_parameters if args.topology_support else None),
+    )
 
 
 def find_image_paths(samples_path: Path) -> list[Path]:
@@ -508,6 +711,7 @@ def process_geometry_diagnostics(
     output_dir: Path,
     pairing_parameters: dict[str, float],
     topology_parameters: dict[str, float] | None,
+    support_parameters: dict[str, float] | None = None,
 ) -> None:
     """Run the existing grouping → fitting → pairing → optional topology stages."""
     # 1. Group source fragments while retaining their separate endpoints and gaps.
@@ -551,15 +755,26 @@ def process_geometry_diagnostics(
     )
     # 4. Topology is opt-in; the previous diagnostic outputs have already been saved.
     if topology_parameters is not None:
-        save_topology_diagnostics(
+        result = save_topology_diagnostics(
             image, image_path, output_dir, fitted_lines, pairs, topology_parameters
         )
+        if support_parameters is not None:
+            save_topology_support_diagnostics(
+                image,
+                output_dir,
+                result,
+                pairs,
+                {line.segment_id: group for line, group in zip(fitted_lines, groups)},
+                support_parameters,
+            )
 
 
 def main() -> None:
     """Run the diagnostic pipeline for each image selected by validated CLI options."""
     # 1. Resolve configuration and sample order before creating output folders.
-    args, pairing_parameters, topology_parameters = parse_arguments()
+    args, pairing_parameters, topology_parameters, support_parameters = (
+        parse_arguments()
+    )
     image_paths = find_image_paths(args.samples.resolve())
     results_dir = args.output.resolve()
     detector = OpenCVSlotDetector()
@@ -599,6 +814,7 @@ def main() -> None:
             output_dir,
             pairing_parameters,
             topology_parameters if args.topology else None,
+            support_parameters,
         )
     print(f"Gotowe. Wyniki: {results_dir}")
 

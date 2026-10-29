@@ -358,11 +358,23 @@ def test_topology_runs_through_actual_lsd_pipeline(
     monkeypatch.setattr(
         sys,
         "argv",
-        [str(script), "--samples", str(sample), "--output", str(output), "--topology"],
+        [
+            str(script),
+            "--samples",
+            str(sample),
+            "--output",
+            str(output),
+            "--topology",
+            "--topology-support",
+        ],
     )
     runpy.run_path(str(script), run_name="__main__")
     result = output / "image-1"
     data = json.loads((result / "topology.json").read_text())
+    support = json.loads((result / "topology_support.json").read_text())
+    assert len(support["intersections"]) == sum(
+        len(node["intersections"]) for node in data["junctions"]
+    )
     if marked:
         assert len(data["lines"]) >= 2
         assert len(data["endpoints"]) == 2 * len(data["lines"])
@@ -399,6 +411,111 @@ def test_rejects_invalid_topology_options_before_writing(
     monkeypatch.setattr(
         sys, "argv", [str(script), "--output", str(output), "--topology", flag, value]
     )
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(script), run_name="__main__")
+    assert error.value.code == 2 and not output.exists()
+
+
+def test_optional_source_support_preserves_all_nine_files_and_raw_source_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image = np.zeros((280, 300, 3), dtype=np.uint8)
+    sample = tmp_path / "sample.png"
+    assert cv2.imwrite(str(sample), image)
+    sources = (
+        LineSegment(0, (20, 140), (57, 140)),
+        LineSegment(1, (69, 140), (180, 140)),
+        LineSegment(2, (20, 146), (57, 146)),
+        LineSegment(3, (69, 146), (180, 146)),
+        LineSegment(4, (60, 100), (60, 210)),
+        LineSegment(5, (66, 100), (66, 210)),
+        LineSegment(6, (180, 100), (180, 210)),
+        LineSegment(7, (220, 240), (230, 240)),
+    )
+    monkeypatch.setattr(OpenCVSlotDetector, "extract_segments", lambda *_: sources)
+    script = Path(__file__).resolve().parents[2] / "scripts/run_parking_batch.py"
+    for name, options in (
+        ("topology", []),
+        (
+            "support",
+            [
+                "--topology-support",
+                "--support-junction-radius",
+                "3",
+                "--support-arm-length",
+                "15",
+            ],
+        ),
+    ):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                str(script),
+                "--samples",
+                str(sample),
+                "--output",
+                str(tmp_path / name),
+                "--topology",
+                *options,
+            ],
+        )
+        runpy.run_path(str(script), run_name="__main__")
+    baseline = tmp_path / "topology/image-1"
+    output = tmp_path / "support/image-1"
+    assert len(list(baseline.iterdir())) == 9
+    for path in baseline.iterdir():
+        assert path.read_bytes() == (output / path.name).read_bytes()
+    assert {p.name for p in output.iterdir()} - {
+        p.name for p in baseline.iterdir()
+    } == {"topology_support.json", "preview_topology_support.png"}
+    data = json.loads((output / "topology_support.json").read_text())
+    topology = json.loads((output / data["topology_file"]).read_text())
+    raw = json.loads((output / data["source_segments_file"]).read_text())
+    assert data["parameters"] == {"junction_radius_px": 3, "arm_length_px": 15}
+    assert "NOT paint confirmation" in data["interpretation"]
+    assert (
+        len(data["intersections"])
+        == sum(len(n["intersections"]) for n in topology["junctions"])
+        == 2
+    )
+    nodes = {n["candidate_id"]: n for n in topology["junctions"]}
+    raw_ids = {s["segment_id"] for s in raw["segments"]}
+    for record in data["intersections"]:
+        hit = nodes[record["candidate_id"]]["intersections"][
+            record["intersection_index"]
+        ]
+        assert [line["line_id"] for line in record["lines"]] == hit["line_ids"]
+        for line in record["lines"]:
+            for edge in line["edges"]:
+                for name in ("junction", "before", "after"):
+                    window = edge[name]
+                    assert 0 <= window["coverage_ratio"] <= 1
+                    assert set(window["source_segment_ids"]) <= raw_ids
+    horizontal = data["intersections"][0]["lines"][0]
+    assert [e["junction"]["coverage_ratio"] for e in horizontal["edges"]] == [0, 0]
+    assert [e["nearest_fragment_gap_px"] for e in horizontal["edges"]] == [6, 6]
+    assert len(topology["lines"]) == 4 and len(topology["endpoints"]) == 8
+    preview = cv2.imread(str(output / "preview_topology_support.png"))
+    assert preview is not None and preview.shape == image.shape
+    assert preview[140, 50, 1] > preview[140, 50, 0]  # Yellow raw fragment.
+    # The white hypothesis marker overlaps the gap, but no yellow LSD bridge does.
+    assert preview[140, 63, 1] == preview[140, 63, 0]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--topology-support"],
+        ["--topology", "--topology-support", "--support-junction-radius", "0"],
+        ["--topology", "--topology-support", "--support-arm-length", "3"],
+        ["--topology", "--topology-support", "--support-arm-length", "inf"],
+    ],
+)
+def test_invalid_source_support_options_write_nothing(tmp_path, monkeypatch, options):
+    script = Path(__file__).resolve().parents[2] / "scripts/run_parking_batch.py"
+    output = tmp_path / "output"
+    monkeypatch.setattr(sys, "argv", [str(script), "--output", str(output), *options])
     with pytest.raises(SystemExit) as error:
         runpy.run_path(str(script), run_name="__main__")
     assert error.value.code == 2 and not output.exists()

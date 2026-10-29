@@ -71,7 +71,10 @@ def find_topology_candidates(
     axes = tuple(pair.centerline for pair in pairs)
     axis_ids = {line.segment_id for line in axes}
     lines = tuple(sorted(axes + unpaired_lines, key=lambda line: line.segment_id))
-    geometry = {line.segment_id: _geometry(line, max_extension_px) for line in lines}
+    geometry = {
+        line.segment_id: prepare_topology_geometry(line, max_extension_px)
+        for line in lines
+    }
 
     # 3. Find bounded pairwise hits, then group nearby hits without losing evidence.
     intersections = _find_intersections(
@@ -233,25 +236,37 @@ def _collect_endpoints(
     )
 
 
-def _geometry(line: LineSegment, extension: float) -> TopologyGeometry:
+def prepare_topology_geometry(
+    line: LineSegment, extension: float = 0.0
+) -> TopologyGeometry:
     """Cache unit direction and a search bbox expanded by the explicit pixel limit."""
-    length = line.length
-    # A unit direction makes distances along the line directly measurable in pixels.
-    ux = (line.end[0] - line.start[0]) / length
-    uy = (line.end[1] - line.start[1]) / length
-    # Expand the search extent only; the stored line keeps its original endpoints.
-    start = (line.start[0] - ux * extension, line.start[1] - uy * extension)
-    end = (line.end[0] + ux * extension, line.end[1] + uy * extension)
-    if not all(isfinite(v) for v in (*start, *end)):
-        raise ValueError("Extended geometry must be finite.")
-    # Pad for arithmetic roundoff only, not endpoint classification tolerance.
-    bbox = (
-        min(start[0], end[0]) - _PIXEL_EPSILON,
-        min(start[1], end[1]) - _PIXEL_EPSILON,
-        max(start[0], end[0]) + _PIXEL_EPSILON,
-        max(start[1], end[1]) + _PIXEL_EPSILON,
+    # 1. Normalize the direction so projections give distances directly in pixels.
+    length_px = line.length
+    unit_x = (line.end[0] - line.start[0]) / length_px
+    unit_y = (line.end[1] - line.start[1]) / length_px
+
+    # 2. Extend the search range only; keep the source line's endpoints unchanged.
+    search_start = (
+        line.start[0] - unit_x * extension,
+        line.start[1] - unit_y * extension,
     )
-    return TopologyGeometry(line, (ux, uy), length, bbox)
+    search_end = (
+        line.end[0] + unit_x * extension,
+        line.end[1] + unit_y * extension,
+    )
+    if not all(isfinite(value) for value in (*search_start, *search_end)):
+        raise ValueError("Extended geometry must be finite.")
+
+    # 3. Build a search bbox with roundoff padding, independent of endpoint tolerance.
+    search_bbox = (
+        min(search_start[0], search_end[0]) - _PIXEL_EPSILON,
+        min(search_start[1], search_end[1]) - _PIXEL_EPSILON,
+        max(search_start[0], search_end[0]) + _PIXEL_EPSILON,
+        max(search_start[1], search_end[1]) + _PIXEL_EPSILON,
+    )
+    return TopologyGeometry(
+        line=line, unit=(unit_x, unit_y), length=length_px, bbox=search_bbox
+    )
 
 
 def _cells(
