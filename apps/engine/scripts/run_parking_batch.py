@@ -3,10 +3,11 @@ import datetime
 import json
 import re
 from colorsys import hsv_to_rgb
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from math import isfinite
 from pathlib import Path
 from random import Random
+from statistics import median
 from time import perf_counter
 from typing import cast
 
@@ -15,6 +16,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from parkvision.capture.frame import Frame
+from parkvision.detection.clahe_preprocessing import (
+    clahe_grayscale,
+    validate_clahe_parameters,
+)
 from parkvision.detection.line_fitting import fit_group_line
 from parkvision.detection.line_segment import LineSegment
 from parkvision.detection.marking_pair import MarkingPair
@@ -537,8 +542,34 @@ def parse_arguments() -> (
     )
     parser.add_argument("--support-junction-radius", type=float, default=3.0)
     parser.add_argument("--support-arm-length", type=float, default=15.0)
+    parser.add_argument(
+        "--clahe-compare",
+        action="store_true",
+        help="Add an extraction-only LSD/CLAHE A/B comparison (opt-in).",
+    )
+    parser.add_argument("--clahe-clip-limit", type=float, default=2.0)
+    parser.add_argument(
+        "--clahe-tile-grid",
+        type=int,
+        nargs=2,
+        default=(8, 8),
+        metavar=("COLUMNS", "ROWS"),
+        help="Number of CLAHE tiles, not tile size in pixels (default: 8 8).",
+    )
+    parser.add_argument(
+        "--clahe-repeats",
+        type=int,
+        default=5,
+        help="Timed repetitions per A/B path after one warmup (default: 5).",
+    )
     # Reuse public algorithm validation on empty input before accessing any files.
     args = parser.parse_args()
+    try:
+        validate_clahe_parameters(args.clahe_clip_limit, tuple(args.clahe_tile_grid))
+    except ValueError as error:
+        parser.error(f"Invalid CLAHE parameters: {error}")
+    if args.clahe_repeats < 1:
+        parser.error("--clahe-repeats must be positive")
     if not isfinite(args.min_length) or args.min_length < 0:
         parser.error("--min-length must be finite and non-negative")
     pairing_parameters = {
@@ -660,6 +691,134 @@ def save_lsd_diagnostics(
         },
     )
     return displayed
+
+
+def extraction_statistics(segments: tuple[LineSegment, ...]) -> dict[str, object]:
+    """Describe all raw fragments; counts and lengths are not quality metrics."""
+    lengths = [segment.length for segment in segments]
+    return {
+        "count": len(lengths),
+        "median_length_px": median(lengths) if lengths else None,
+        "total_length_px": sum(lengths),
+        "long_threshold_px": 100.0,
+        "long_count": sum(length >= 100.0 for length in lengths),
+    }
+
+
+def render_extraction_overlay(
+    image: NDArray[np.uint8], segments: tuple[LineSegment, ...]
+) -> NDArray[np.uint8]:
+    """Overlay every unfiltered raw segment on the same original BGR image."""
+    preview = image.copy()
+    for segment in segments:
+        start = tuple(round(value * 256) for value in segment.start)
+        end = tuple(round(value * 256) for value in segment.end)
+        cv2.line(preview, start, end, (0, 0, 255), 1, cv2.LINE_AA, shift=8)
+    return preview
+
+
+def save_clahe_comparison(
+    frame: Frame,
+    detector: OpenCVSlotDetector,
+    image_path: Path,
+    output_dir: Path,
+    *,
+    clip_limit: float,
+    tile_grid_size: tuple[int, int],
+    repeats: int,
+) -> None:
+    """Compare extraction only; never feed CLAHE segments into later stages.
+
+    Each path gets one discarded warmup. Timed rounds alternate order, use the
+    same extractor, and exclude IO/statistics/rendering. CLAHE preprocessing time
+    includes the grayscale-to-BGR adapter required by the unchanged extractor.
+    """
+    comparison_dir = output_dir / "clahe_comparison"
+    comparison_dir.mkdir(exist_ok=True)
+    timings: dict[str, list[tuple[float, float, float]]] = {
+        "baseline": [],
+        "clahe": [],
+    }
+    results: dict[str, tuple[LineSegment, ...]] = {}
+    for repeat in range(-1, repeats):
+        names = ("baseline", "clahe") if repeat % 2 == 0 else ("clahe", "baseline")
+        for name in names:
+            started = perf_counter()
+            input_frame = frame
+            preprocessing_seconds = 0.0
+            if name == "clahe":
+                gray = clahe_grayscale(
+                    frame.image, clip_limit=clip_limit, tile_grid_size=tile_grid_size
+                )
+                input_frame = replace(
+                    frame,
+                    image=cast(
+                        NDArray[np.uint8], cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                    ),
+                )
+                preprocessing_seconds = perf_counter() - started
+            extraction_started = perf_counter()
+            segments = detector.extract_segments(input_frame)
+            finished = perf_counter()
+            if repeat >= 0:
+                timings[name].append(
+                    (
+                        preprocessing_seconds,
+                        finished - extraction_started,
+                        finished - started,
+                    )
+                )
+            results[name] = segments
+
+    for name, segments in results.items():
+        samples = timings[name]
+        _write_json(
+            comparison_dir / f"{name}.json",
+            {
+                "schema_version": 1,
+                "source": str(image_path),
+                "opencv_version": cv2.__version__,
+                "opencv_threads": cv2.getNumThreads(),
+                "image_width": frame.image.shape[1],
+                "image_height": frame.image.shape[0],
+                "coordinate_system": "pixels",
+                "interpretation": "all raw LSD fragments; NOT detection quality",
+                "lsd": "same OpenCVSlotDetector; LSD_REFINE_STD; OpenCV defaults",
+                "preprocessing": (
+                    {
+                        "method": "BGR2GRAY -> CLAHE -> GRAY2BGR adapter",
+                        "clipLimit": clip_limit,
+                        "tileGridSize": tile_grid_size,
+                    }
+                    if name == "clahe"
+                    else {"method": "original BGR, unchanged"}
+                ),
+                "statistics": extraction_statistics(segments),
+                "timing": {
+                    "repeats": repeats,
+                    "discarded_warmups_per_path": 1,
+                    "order": "alternating baseline/clahe; IO excluded",
+                    "sample_columns": ["preprocessing_s", "extraction_s", "total_s"],
+                    "samples": samples,
+                    "median_preprocessing_s": median(s[0] for s in samples),
+                    "median_extraction_s": median(s[1] for s in samples),
+                    "median_total_s": median(s[2] for s in samples),
+                },
+                "segments": [line_data(segment) for segment in segments],
+            },
+            allow_nan=False,
+        )
+        _write_preview(
+            comparison_dir / f"preview_{name}.png",
+            render_extraction_overlay(frame.image, segments),
+        )
+    # Save the exact processed luminance, without any segment overlay.
+    _write_preview(comparison_dir / "grayscale_clahe.png", gray)
+    _write_preview(
+        comparison_dir / "grayscale_baseline.png",
+        cast(NDArray[np.uint8], cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY)),
+    )
+    print(f"  Extraction A/B: {comparison_dir}")
 
 
 def save_marking_diagnostics(
@@ -816,6 +975,16 @@ def main() -> None:
             topology_parameters if args.topology else None,
             support_parameters,
         )
+        if args.clahe_compare:
+            save_clahe_comparison(
+                frame,
+                detector,
+                image_path,
+                output_dir,
+                clip_limit=args.clahe_clip_limit,
+                tile_grid_size=tuple(args.clahe_tile_grid),
+                repeats=args.clahe_repeats,
+            )
     print(f"Gotowe. Wyniki: {results_dir}")
 
 

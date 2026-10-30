@@ -2,6 +2,7 @@ import json
 import runpy
 import sys
 from pathlib import Path
+from statistics import median
 
 import cv2
 import numpy as np
@@ -9,6 +10,152 @@ import pytest
 
 from parkvision.detection.line_segment import LineSegment
 from parkvision.detection.opencv_slot_detector import OpenCVSlotDetector
+
+
+@pytest.mark.parametrize("marked", [False, True], ids=["blank", "marked"])
+def test_clahe_is_opt_in_and_preserves_all_previous_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marked: bool
+) -> None:
+    image = np.full((160, 260, 3), 45, dtype=np.uint8)
+    if marked:
+        cv2.rectangle(image, (30, 60), (225, 66), (90, 90, 90), -1)
+        cv2.line(image, (70, 90), (90, 90), (110, 110, 110), 2)
+    original = image.copy()
+    sample = tmp_path / "sample.png"
+    assert cv2.imwrite(str(sample), image)
+    image.flags.writeable = False
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_parking_batch.py"
+
+    for name, options in (
+        ("baseline", []),
+        (
+            "experiment",
+            [
+                "--clahe-compare",
+                "--clahe-clip-limit",
+                "3",
+                "--clahe-tile-grid",
+                "4",
+                "7",
+                "--clahe-repeats",
+                "2",
+            ],
+        ),
+    ):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(cv2, "imread", lambda *_: image)
+            scoped.setattr(
+                sys,
+                "argv",
+                [
+                    str(script),
+                    "--samples",
+                    str(sample),
+                    "--output",
+                    str(tmp_path / name),
+                    "--min-length",
+                    "10000",
+                    "--topology",
+                    "--topology-support",
+                    *options,
+                ],
+            )
+            if name == "baseline":
+
+                def unexpected_clahe(*args: object, **kwargs: object) -> None:
+                    pytest.fail("Default batch must not create CLAHE")
+
+                scoped.setattr(cv2, "createCLAHE", unexpected_clahe)
+            runpy.run_path(str(script), run_name="__main__")
+
+    old = tmp_path / "baseline" / "image-1"
+    new = tmp_path / "experiment" / "image-1"
+    assert len(list(old.iterdir())) == 11
+    for path in old.iterdir():
+        assert path.read_bytes() == (new / path.name).read_bytes()
+    assert {p.name for p in new.iterdir()} == {p.name for p in old.iterdir()} | {
+        "clahe_comparison"
+    }
+    comparison = new / "clahe_comparison"
+    assert {p.name for p in comparison.iterdir()} == {
+        "baseline.json",
+        "clahe.json",
+        "preview_baseline.png",
+        "preview_clahe.png",
+        "grayscale_baseline.png",
+        "grayscale_clahe.png",
+    }
+    baseline = json.loads((comparison / "baseline.json").read_text())
+    clahe = json.loads((comparison / "clahe.json").read_text())
+    raw = json.loads((new / "segments.json").read_text())
+    assert baseline["segments"] == raw["segments"]
+    assert clahe["preprocessing"]["clipLimit"] == 3.0
+    assert clahe["preprocessing"]["tileGridSize"] == [4, 7]
+    for data in (baseline, clahe):
+        lengths = [s["length"] for s in data["segments"]]
+        assert data["statistics"] == {
+            "count": len(lengths),
+            "median_length_px": median(lengths) if lengths else None,
+            "total_length_px": sum(lengths),
+            "long_threshold_px": 100.0,
+            "long_count": sum(length >= 100 for length in lengths),
+        }
+        timing = data["timing"]
+        assert timing["repeats"] == len(timing["samples"]) == 2
+        assert all(value >= 0 for sample in timing["samples"] for value in sample)
+        assert timing["median_extraction_s"] == median(s[1] for s in timing["samples"])
+        assert timing["median_total_s"] >= timing["median_extraction_s"]
+        assert data["image_width"] == 260 and data["image_height"] == 160
+        assert data["coordinate_system"] == "pixels"
+    for name in ("baseline", "clahe"):
+        gray = cv2.imread(
+            str(comparison / f"grayscale_{name}.png"), cv2.IMREAD_GRAYSCALE
+        )
+        overlay = cv2.imread(str(comparison / f"preview_{name}.png"))
+        assert gray is not None and gray.shape == image.shape[:2]
+        assert gray.dtype == np.uint8
+        assert overlay is not None and overlay.shape == image.shape
+        assert overlay.dtype == np.uint8
+        # Compare all coordinates/IDs to the same native LSD API, without filtering.
+        data = baseline if name == "baseline" else clahe
+        lines = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD).detect(gray)[0]
+        expected = [] if lines is None else lines.reshape(-1, 4).tolist()
+        assert [s["start"] + s["end"] for s in data["segments"]] == expected
+        assert [s["segment_id"] for s in data["segments"]] == list(range(len(expected)))
+        # --min-length applies only to the old preview, never to the A/B overlays.
+        if marked:
+            assert not np.array_equal(overlay, image)
+    np.testing.assert_array_equal(cv2.imread(str(sample)), original)
+    np.testing.assert_array_equal(image, original)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--clahe-clip-limit", "0"],
+        ["--clahe-clip-limit", "-1"],
+        ["--clahe-clip-limit", "nan"],
+        ["--clahe-clip-limit", "inf"],
+        ["--clahe-tile-grid", "0", "8"],
+        ["--clahe-tile-grid", "8", "-1"],
+        ["--clahe-tile-grid", "8.5", "8"],
+        ["--clahe-tile-grid", "2147483648", "8"],
+        ["--clahe-repeats", "0"],
+        ["--clahe-repeats", "-1"],
+    ],
+)
+def test_rejects_invalid_clahe_options_before_accessing_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: list[str]
+) -> None:
+    output = tmp_path / "results"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_parking_batch.py"
+    monkeypatch.setattr(
+        sys, "argv", [str(script), "--output", str(output), "--clahe-compare", *options]
+    )
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(script), run_name="__main__")
+    assert error.value.code == 2
+    assert not output.exists()
 
 
 def test_batch_adds_fitted_preview_and_preserves_raw_gaps_and_data(
