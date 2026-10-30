@@ -1,0 +1,3 @@
+# Data tools only; no engine install and no training framework.
+numpy==2.5.4
+opencv-python-headless==5.0.0.93
