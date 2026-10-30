@@ -1,0 +1,15 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "mypy-type-checker.interpreter": [
+    "${workspaceFolder}/.venv/bin/python"
+  ],
+  "mypy-type-checker.path": [
+    "${workspaceFolder}/.venv/bin/python",
+    "-I",
+    "-m",
+    "mypy"
+  ],
+  "mypy-type-checker.args": [
+    "--follow-imports=silent"
+  ]
+}

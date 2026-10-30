@@ -1,5 +1,9 @@
 # Farba parkingowa: pierwszy krok CV + ML
 
+**Aktualizacja 2026-10-30:** po ręcznym przeglądzie pilota wyeksportowano cztery
+maski i wykonano osobny [techniczny test U-Net](overfit.md). Poniższy opis audytu
+i wyniki pierwszego etapu zachowują swój wcześniejszy stan. Silnik pozostaje bez zmian.
+
 Stan i weryfikacja źródeł: **2026-10-30**. To działający workflow przygotowania
 danych, jeszcze bez treningu, predykcji i metryk modelu. Nie ma lokalnego GT farby.
 Wszystkie polecenia poniżej zakładają katalog główny repozytorium ParkVision.

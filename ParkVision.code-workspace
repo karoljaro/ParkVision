@@ -1,0 +1,19 @@
+{
+  "folders": [
+    {
+      "name": "Engine",
+      "path": "apps/engine"
+    },
+    {
+      "name": "Paint segmentation",
+      "path": "research/paint-segmentation"
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "flake8.args": [
+      "--config",
+      "${workspaceFolder:Engine}/.flake8"
+    ]
+  }
+}
