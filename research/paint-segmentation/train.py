@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import os
 import random
 import shutil
@@ -301,9 +302,19 @@ def build_model(pretrained: Path | None = None, classes: int = 3) -> nn.Module:
 
 
 def transfer_avm_features(
-    model: nn.Module, checkpoint: Path, expected_hash: str
+    model: nn.Module,
+    checkpoint: Path,
+    expected_hash: str,
+    scope: str = "encoder_decoder",
 ) -> dict:
-    """Transfer binary AVM encoder/decoder only; retain a fresh three-class head."""
+    """Transfer selected AVM features, verifying every copied and retained tensor.
+
+    Fresh means the new model's initialization is preserved, including BatchNorm
+    defaults; not every fresh parameter/buffer is random (e.g. zero biases).
+    This function consumes no RNG, so the fine-tuning seed/order stay unchanged.
+    """
+    if scope not in {"encoder", "encoder_decoder"}:
+        raise ValueError("Transfer scope must be encoder or encoder_decoder")
     if sha256(checkpoint) != expected_hash:
         raise ValueError("AVM transfer checkpoint hash mismatch")
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -314,10 +325,19 @@ def transfer_avm_features(
     source = state["model"]
     destination = model.state_dict()
     heads = [key for key in destination if key.startswith("segmentation_head.")]
-    features = [key for key in destination if key.startswith(("encoder.", "decoder."))]
-    if set(source) != set(destination) or not heads or not features:
+    prefixes = ("encoder.",) if scope == "encoder" else ("encoder.", "decoder.")
+    features = [key for key in destination if key.startswith(prefixes)]
+    if (
+        set(source) != set(destination)
+        or not heads
+        or not features
+        or any(
+            not key.startswith(("encoder.", "decoder.", "segmentation_head."))
+            for key in destination
+        )
+    ):
         raise ValueError("Transfer architecture keys differ")
-    original_head = {key: destination[key].clone() for key in heads}
+    fresh = {key: value.clone() for key, value in destination.items()}
     for key in features:
         if source[key].shape != destination[key].shape:
             raise ValueError(f"Transfer feature shape differs: {key}")
@@ -325,18 +345,50 @@ def transfer_avm_features(
     model.load_state_dict(destination, strict=True)
     restored = model.state_dict()
     if any(not torch.equal(restored[k], source[k]) for k in features) or any(
-        not torch.equal(restored[k], original_head[k]) for k in heads
+        not torch.equal(restored[k], fresh[k]) for k in destination if k not in features
     ):
         raise ValueError("Feature/head transfer verification failed")
+    parameters = dict(model.named_parameters())
+
+    def digest(tensor: Tensor) -> str:
+        return hashlib.sha256(
+            tensor.detach().cpu().contiguous().numpy().tobytes()
+        ).hexdigest()
+
+    audit = [
+        {
+            "name": key,
+            "component": key.split(".", 1)[0],
+            "kind": "parameter" if key in parameters else "buffer",
+            "action": (
+                "copied_from_avm" if key in features else "kept_fresh_initialization"
+            ),
+            "shape": list(restored[key].shape),
+            "source_shape": list(source[key].shape),
+            "dtype": str(restored[key].dtype),
+            "initial_sha256": digest(fresh[key]),
+            "source_sha256": digest(source[key]),
+            "result_sha256": digest(restored[key]),
+        }
+        for key in destination
+    ]
     return {
         "checkpoint": str(checkpoint.resolve()),
         "sha256": expected_hash,
         "source_epoch": state["epoch"],
         "source_config": state["config"],
+        "transfer_scope": scope,
         "feature_tensors_transferred": len(features),
         "head_tensors_retained": heads,
+        "fresh_tensors_retained": [key for key in destination if key not in features],
+        "all_transferred_tensors_equal_source": True,
+        "all_retained_tensors_equal_fresh_initialization": True,
+        "tensor_audit": audit,
         "policy": (
-            "encoder+decoder including buffers; fresh three-class head, "
+            "encoder including buffers; fresh decoder and three-class head, "
+            "no decoder/head or optimizer transfer"
+            if scope == "encoder"
+            else "encoder+decoder including buffers; fresh three-class head, "
             "no binary head or optimizer transfer"
         ),
     }
@@ -530,8 +582,14 @@ def run(args: argparse.Namespace) -> dict:
     initialization = None
     if transfer_path:
         initialization = transfer_avm_features(
-            model, transfer_path, args.transfer_sha256
+            model,
+            transfer_path,
+            args.transfer_sha256,
+            scope=getattr(args, "transfer_scope", "encoder_decoder"),
         )
+        expected_audit = getattr(args, "expected_transfer_audit", None)
+        if expected_audit is not None and initialization != read_json(expected_audit):
+            raise ValueError("Transfer differs from the preflight tensor audit")
     model = model.to(device)
     encoder = cast(Any, model).encoder
     encoder_ids = {id(p) for p in encoder.parameters()}
@@ -643,7 +701,7 @@ def run(args: argparse.Namespace) -> dict:
             "epoch": 0,
             "validation": initial,
             "note": (
-                "Transferred AVM encoder/decoder, fresh three-class head"
+                initialization["policy"]
                 if initialization
                 else "ImageNet encoder, random decoder, before optimization"
             ),
@@ -771,6 +829,12 @@ def main() -> int:
     train.add_argument("--pretrained", type=Path, required=True)
     train.add_argument("--transfer-checkpoint", type=Path)
     train.add_argument("--transfer-sha256")
+    train.add_argument(
+        "--transfer-scope",
+        choices=("encoder", "encoder_decoder"),
+        default="encoder_decoder",
+    )
+    train.add_argument("--expected-transfer-audit", type=Path)
     train.add_argument("--output", type=Path, required=True)
     train.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     train.add_argument("--epochs", type=int, default=100)

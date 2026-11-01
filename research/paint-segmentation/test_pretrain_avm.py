@@ -26,7 +26,10 @@ class Tiny(nn.Module):
         return self.segmentation_head(self.decoder(self.encoder(x)))
 
 
-def test_pretraining_transfer_and_finetuning(archive, frozen, tmp_path, monkeypatch):
+@pytest.mark.parametrize("scope", ("encoder_decoder", "encoder"))
+def test_pretraining_transfer_and_finetuning(
+    archive, frozen, tmp_path, monkeypatch, scope
+):
     zipped, provenance = archive
     source = read_json(provenance)
     source["research_use_basis_accepted"] = True  # synthetic fixtures only
@@ -56,6 +59,13 @@ def test_pretraining_transfer_and_finetuning(archive, frozen, tmp_path, monkeypa
     assert report["checkpoint_reload_identical"] and not report["CNR_used"]
     assert report["steps"] == 1 and not report["PUCPR_used"]
     fine = tmp_path / "fine"
+    expected_audit = tmp_path / "preflight.json"
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(42)
+        audit = train.transfer_avm_features(
+            Tiny(), output / "last.pt", sha256(output / "last.pt"), scope=scope
+        )
+    write_json(expected_audit, audit)
     args = argparse.Namespace(
         frozen=frozen,
         pretrained=pretrained,
@@ -69,6 +79,8 @@ def test_pretraining_transfer_and_finetuning(archive, frozen, tmp_path, monkeypa
         tile_size=64,
         transfer_checkpoint=output / "last.pt",
         transfer_sha256=sha256(output / "last.pt"),
+        transfer_scope=scope,
+        expected_transfer_audit=expected_audit,
     )
     before = sha256(output / "last.pt")
     result = train.run(args)
@@ -77,9 +89,19 @@ def test_pretraining_transfer_and_finetuning(archive, frozen, tmp_path, monkeypa
         and result["checkpoint_reload_predictions_identical"]
     )
     assert sha256(output / "last.pt") == before
-    assert read_json(fine / "transfer.json")["feature_tensors_transferred"] == 4
+    transferred = read_json(fine / "transfer.json")
+    assert transferred == audit
+    assert transferred["feature_tensors_transferred"] == (
+        4 if scope == "encoder_decoder" else 2
+    )
     assert set(result["validation"]["per_image"]) == {"val"}
     assert result["validation"]["classes"]["curb"]["support"] > 0
     assert not list((fine / "validation").glob("test*"))
     with pytest.raises(ValueError, match="NEW directory"):
         pretrain_avm.run(argparse.Namespace(output=output))
+    audit["tensor_audit"][0]["result_sha256"] = "changed"
+    write_json(expected_audit, audit)
+    args.output = tmp_path / "bad-preflight"
+    with pytest.raises(ValueError, match="preflight"):
+        train.run(args)
+    assert not args.output.exists()

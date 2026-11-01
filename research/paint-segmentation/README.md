@@ -1,5 +1,13 @@
 # Farba parkingowa: pierwszy krok CV + ML
 
+**Transfer encodera AVM 2026-11-01:** wykonano jeden [kontrolowany wariant z nowym
+decoderem i głowicą](/home/karoljaron/Projects/ParkVision/research/paint-segmentation/avm-encoder-only.md).
+Na tych samych ROI CNR IoU paint wynosi **29,16%**, precision **45,26%**, recall
+**45,06%**; foreground mIoU **20,12%**. Pomyłki paint→curb: 664 piksele.
+IoU curb spadło do **11,07%**, a IoU paint na mokrej kamerze do **0,43%**.
+To ograniczona walidacja i wynik mieszany; bez dalszego strojenia oraz bez oceny PUCPR.
+Wcześniejsze artefakty i silnik zachowano, bez commita.
+
 **Wykorzystanie AVM SS 2026-11-01:** wykonano [import i trening AVM → UFPR](/home/karoljaron/Projects/ParkVision/research/paint-segmentation/avm-experiment.md).
 6763 pary sprawdzone w całości; 3 epoki pretrainingu i osobny fine-tuning.
 Na identycznych ROI CNR foreground mIoU **18,53% → 18,94%**, ale IoU paint
