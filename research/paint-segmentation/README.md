@@ -1,5 +1,12 @@
 # Farba parkingowa: pierwszy krok CV + ML
 
+**Aktualny kierunek 2026-11-01:** [jednorazowy setup i zapis zatwierdzonej
+geometrii](../../apps/engine/docs/parking-setup.md). CV i ML są opcjonalną pomocą
+operatora podczas konfiguracji, nie obowiązkowym odtwarzaniem miejsc w każdej
+klatce. Kolejny [evaluation stage](setup-evaluation.md) mierzy koszt poprawek
+i jakość setupu na nowym parkingu. Teraz bez kolejnego treningu, strojenia CNR
+i otwierania PUCPR. Starsze plany modeli poniżej pozostają historią badań.
+
 **Binarna farba 2026-11-01:** wykonano jeden [eksperyment dwóch klas z pełną
 inicjalizacją AVM](/home/karoljaron/Projects/ParkVision/research/paint-segmentation/binary-paint-experiment.md).
 Na tych samych ROI CNR IoU paint **39,81%**, Dice **56,95%**, precision **64,26%**,

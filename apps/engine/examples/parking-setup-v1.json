@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "approved_by": "synthetic-test-operator",
+  "approved_at": "2026-11-01T12:00:00+00:00",
+  "parking": {"id": "synthetic-parking", "name": "Syntetyczny przykład, nie rzeczywisty parking"},
+  "cameras": [
+    {"id": "camera-east", "parking_id": "synthetic-parking", "name": "Wschód", "image_width": 1280, "image_height": 720},
+    {"id": "camera-west", "parking_id": "synthetic-parking", "name": "Zachód", "image_width": 1000, "image_height": 750}
+  ],
+  "slots": [
+    {"id": "slot-01", "parking_id": "synthetic-parking", "label": "01"},
+    {"id": "slot-02", "parking_id": "synthetic-parking", "label": null}
+  ],
+  "projections": [
+    {
+      "camera_id": "camera-east", "parking_slot_id": "slot-01",
+      "polygon": [{"x": 0.1, "y": 0.2}, {"x": 0.25, "y": 0.22}, {"x": 0.3, "y": 0.6}, {"x": 0.08, "y": 0.58}]
+    },
+    {
+      "camera_id": "camera-west", "parking_slot_id": "slot-01",
+      "polygon": [{"x": 0.6, "y": 0.25}, {"x": 0.75, "y": 0.3}, {"x": 0.72, "y": 0.7}, {"x": 0.5, "y": 0.65}]
+    },
+    {
+      "camera_id": "camera-east", "parking_slot_id": "slot-02",
+      "polygon": [{"x": 0.28, "y": 0.23}, {"x": 0.42, "y": 0.25}, {"x": 0.52, "y": 0.64}, {"x": 0.32, "y": 0.61}]
+    }
+  ]
+}
