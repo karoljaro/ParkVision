@@ -202,9 +202,10 @@ Zmieniono wyłącznie nowy moduł, jego testy, syntetyczny przykład, ten review
 plan ewaluacji ML i odsyłacz w README research. Nie zmieniono istniejącego kodu
 CV/ML, klas domenowych, danych ani checkpointów. Nie wykonano commita.
 
-Najbliższy krok produktowy: **lokalny podgląd zapisanej konfiguracji na prywatnej
-klatce referencyjnej**, z ID miejsc i kamer oraz kontrolą wymiarów, bez detekcji.
-Pozwoli operatorowi sprawdzić pierwszy rzeczywisty parking przed zatwierdzeniem.
-Dopiero potem warto dodawać wygodną edycję/akceptowanie podpowiedzi i osobny
-moduł zajętości. Plan małego niezależnego badania ML:
+Kolejny etap dostarczył **[lokalny podgląd zapisanej konfiguracji na referencji
+kamery](configuration-preview.md)**, z ID miejsc, etykietami i kontrolą wymiarów,
+bez detekcji i zmiany geometrii. Narzędzie używa zatwierdzonego formatu JSON;
+nie jest edytorem ani mechanizmem nadawania zatwierdzenia. Następny krok to
+pierwsza rzeczywista, ręcznie zweryfikowana konfiguracja i kontrola jej nakładek
+na referencjach wszystkich kamer. Plan małego niezależnego badania ML:
 `research/paint-segmentation/setup-evaluation.md` względem głównego repo.
