@@ -1,5 +1,61 @@
 # Farba parkingowa: pierwszy krok CV + ML
 
+**Wykorzystanie AVM SS 2026-11-01:** wykonano [import i trening AVM → UFPR](/home/karoljaron/Projects/ParkVision/research/paint-segmentation/avm-experiment.md).
+6763 pary sprawdzone w całości; 3 epoki pretrainingu i osobny fine-tuning.
+Na identycznych ROI CNR foreground mIoU **18,53% → 18,94%**, ale IoU paint
+spadło do **15,18%**, a recall do **15,46%**. Wynik mieszany, bez promowania modelu.
+AVM pozostaje osobnym źródłem badawczym, bez sztucznego curb i bez używania
+losowego splitu do niezależnej walidacji. Nie potwierdzono formalnej licencji danych;
+podstawę lokalnego akademickiego wykorzystania opisano w raporcie.
+PUCPR, wcześniejsze checkpointy, anotacje i silnik zachowano. Starsze wpisy poniżej
+opisują poprzednie etapy.
+
+**Audyt gotowych masek 2026-11-01:** [AVM SS, AVP-SLAM Liu/Yao, PSV, RLMD
+i źródła dodatkowe](ready-datasets-audit.md). Sprawdzono 20 rzeczywistych par
+obraz–maska. AVM SS jest najbliższym kandydatem; nadal wymaga potwierdzenia
+praw do danych i grupowania. RLMD/PSV/CeyMo zawierają także etykiety nominalnych
+obszarów z asfaltem, nie tylko widocznej farby. Brak nowego treningu/importu.
+Baseline v1 (18,53% CNR) i wszystkie wcześniejsze checkpointy zachowane;
+SHA256 best.pt oraz kontrola 107 artefaktów zapisane w osobnym katalogu audytu.
+
+**Pierwszy trening 2026-11-01:** ukończono [U-Net ResNet50 z ImageNet
+i niezależną walidacją CNR](training-results.md). Zamrożono podział UFPR train /
+CNR val / PUCPR test. Early stopping po 23 epokach, najlepsza epoka 8:
+IoU paint **22,28%**, curb **14,77%**; dużo fałszywych alarmów, wynik
+eksperymentalny. Zachowano checkpointy, przebieg i wszystkie predykcje CNR.
+PUCPR poza oceną i strojeniem. [Pipeline i odtworzenie](training.md).
+Bez zmian silnika, dawnych anotacji i artefaktów oraz bez commita.
+Starsze wpisy poniżej opisują stan sprzed treningu.
+
+**Najnowszy stan 2026-11-01:** [odzyskano pochodzenie wcześniejszych PKLot/CNR
+i przygotowano pulę z trzech parkingów](dataset-a-provenance.md): **8 obrazów,
+150 reviewed poligonów, 106 037 nadzorowanych pikseli**. Potwierdzono pełną
+zgodność pobranych JPEG-ów oraz deklaracje CC BY 4.0 / ODbL 1.0 dla danych.
+Nowy eksport zachowuje identyczne maski. Przygotowano osobną propozycję podziału
+całymi parkingami (UFPR/CNR/PUCPR, 2/3/3); aktywna pula nadal pilot, bez treningu.
+Poniższe wcześniejsze wpisy zachowują historyczny stan przed tą weryfikacją.
+
+**Najnowszy etap 2026-11-01:** po ręcznej korekcie użytkownika wykonano
+[eksport v2 trzeciej partii i porównanie masek](dataset-a-batch03-review.md).
+265 pikseli asfaltu zmieniono z curb na background, 61 niepewnych paint na ignore;
+mały krawężnik zachowano. Wskazane uwagi zostały zamknięte. Bieżąca pula ma
+11 masek, 198 poligonów i 386 413 pikseli nadzorowanych. Całość nadal pilot;
+jedyny parking z potwierdzonym oryginalnym pochodzeniem plików to PUCPR.
+
+**Przygotowanie 2026-11-01:** przygotowano [trzecią partię: 3 pełne kadry
+PUCPR pobrane bezpośrednio od autorów PKLot](dataset-a-batch03-pucpr.md),
+z oryginalnymi ścieżkami, datami, hashami i licencją danych CC BY 4.0.
+Nowe obrazy czekają na ręczną anotację; wszystkie trzy należą do jednego parkingu.
+Łącznie wybrano 11 obrazów: 8 reviewed + 3 nieoznaczone. Treningu nie uruchamiano.
+
+**Wcześniej 2026-11-01:** wykonano [eksport ręcznie zatwierdzonej drugiej
+partii i przegląd nakładek](dataset-a-batch02-review.md): 4 nowe maski,
+107 poligonów użytkownika. Razem ze starym pilotem jest 8 obrazów, 136 poligonów
+i 349 094 oznaczone piksele. Całość pozostaje w pilot; brak niezależnego podziału
+i potwierdzonej proweniencji/licencji lokalnych plików. AVM nadal poza A.
+[Przygotowanie partii i audyt AVM z 2026-10-30](dataset-a-expansion.md) oraz
+poniższe starsze sekcje zachowują swój historyczny zakres.
+
 **Aktualizacja 2026-10-30:** po ręcznym przeglądzie pilota wyeksportowano cztery
 maski i wykonano osobny [techniczny test U-Net](overfit.md). Poniższy opis audytu
 i wyniki pierwszego etapu zachowują swój wcześniejszy stan. Silnik pozostaje bez zmian.

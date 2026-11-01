@@ -1,0 +1,2 @@
+# Optional isolated training environment. Never install into apps/engine/.venv.
+-r requirements-overfit.txt
