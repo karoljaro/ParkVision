@@ -1,4 +1,4 @@
-"""Versioned, operator-approved geometry, independent of frames and detectors."""
+"""Versioned parking geometry; only approved revisions can be persisted as config."""
 
 import argparse
 import json
@@ -23,9 +23,10 @@ SCHEMA_VERSION = 1
 
 @dataclass(frozen=True, slots=True)
 class ParkingConfiguration:
-    """One approved revision; existing domain objects remain the geometry model.
+    """One geometry revision; missing approval metadata means an in-memory draft.
 
-    A projection means an approved, usable ROI for that camera/slot pair.
+    In approved revisions, a projection means a usable ROI for that camera/slot pair.
+    In a draft, the same geometry is a proposal awaiting operator review.
     Absence means no configured ROI, not a current occupancy/occlusion state.
     Approval fields record an operator declaration, not an authenticated signature.
     """
@@ -36,8 +37,8 @@ class ParkingConfiguration:
     projections: tuple[SlotProjection, ...]
     camera_image_sizes: Mapping[CameraId, tuple[int, int]]
     revision: int
-    approved_by: str
-    approved_at: datetime
+    approved_by: str | None = None
+    approved_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cameras", tuple(self.cameras))
@@ -46,9 +47,12 @@ class ParkingConfiguration:
         sizes = {key: tuple(size) for key, size in self.camera_image_sizes.items()}
         object.__setattr__(self, "camera_image_sizes", MappingProxyType(sizes))
         _integer(self.revision, "revision", minimum=1)
-        _string(self.approved_by, "approved_by")
-        if self.approved_at.utcoffset() is None:
-            raise ValueError("approved_at must include a timezone")
+        if (self.approved_by is None) != (self.approved_at is None):
+            raise ValueError("Approval requires both approved_by and approved_at")
+        if self.approved_by is not None and self.approved_at is not None:
+            _string(self.approved_by, "approved_by")
+            if self.approved_at.utcoffset() is None:
+                raise ValueError("approved_at must include a timezone")
         _string(self.parking.id, "parking.id")
         _string(self.parking.name, "parking.name")
         camera_ids: set[CameraId] = set()
@@ -92,6 +96,10 @@ class ParkingConfiguration:
                 _coordinate(vertex.y)
         if not slot_ids or {slot_id for _, slot_id in pairs} != slot_ids:
             raise ValueError("Every configured slot needs at least one projection")
+
+    @property
+    def is_approved(self) -> bool:
+        return self.approved_by is not None and self.approved_at is not None
 
     def projections_for_camera(
         self, camera_id: CameraId, *, image_width: int, image_height: int
@@ -225,6 +233,8 @@ def load_configuration(path: Path) -> ParkingConfiguration:
 
 def save_configuration(configuration: ParkingConfiguration, path: Path) -> None:
     """Export to a new file only; revisions are never overwritten implicitly."""
+    if configuration.approved_by is None or configuration.approved_at is None:
+        raise ValueError("Cannot export DRAFT geometry as an approved configuration")
     data = {
         "schema_version": SCHEMA_VERSION,
         "revision": configuration.revision,

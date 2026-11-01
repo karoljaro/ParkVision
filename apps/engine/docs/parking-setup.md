@@ -202,10 +202,17 @@ Zmieniono wyłącznie nowy moduł, jego testy, syntetyczny przykład, ten review
 plan ewaluacji ML i odsyłacz w README research. Nie zmieniono istniejącego kodu
 CV/ML, klas domenowych, danych ani checkpointów. Nie wykonano commita.
 
+Aktualizacja kolejnego etapu: [pierwszy DRAFT z LabelMe](labelme-slot-setup.md)
+korzysta z tego samego modelu z obiema metadanymi approval równymi `None`.
+To jawny stan roboczy w pamięci, wizualizowany z ostrzeżeniem DRAFT. Zapis/odczyt
+zatwierdzonego formatu JSON v1 nadal wymaga operatora i czasu; DRAFT jest
+przechowywany wyłącznie w odrębnej anotacji LabelMe i nie przechodzi eksportu.
+
 Kolejny etap dostarczył **[lokalny podgląd zapisanej konfiguracji na referencji
 kamery](configuration-preview.md)**, z ID miejsc, etykietami i kontrolą wymiarów,
 bez detekcji i zmiany geometrii. Narzędzie używa zatwierdzonego formatu JSON;
-nie jest edytorem ani mechanizmem nadawania zatwierdzenia. Następny krok to
-pierwsza rzeczywista, ręcznie zweryfikowana konfiguracja i kontrola jej nakładek
-na referencjach wszystkich kamer. Plan małego niezależnego badania ML:
+nie jest edytorem ani mechanizmem nadawania zatwierdzenia. [Etap LabelMe](labelme-slot-setup.md)
+zakończył następnie pierwszy rzeczywisty pilot: użytkownik zatwierdził trzy miejsca
+na `parking.jpg`, zapisano rewizję 1 i sprawdzono finalny podgląd.
+Plan małego niezależnego badania ML:
 `research/paint-segmentation/setup-evaluation.md` względem głównego repo.

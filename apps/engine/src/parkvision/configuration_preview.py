@@ -61,7 +61,14 @@ def render_configuration_preview(
         raise ValueError("OpenCV's bundled sans font is unavailable")
     white = (235, 235, 235)
     rows: list[tuple[str, tuple[int, int, int]]] = [
-        ("Saved parking geometry", white),
+        (
+            (
+                "Saved parking geometry"
+                if configuration.is_approved
+                else "DRAFT - NOT APPROVED"
+            ),
+            white,
+        ),
         (f"parking: {_quoted(configuration.parking.id)}", white),
         (f"name: {_quoted(configuration.parking.name)}", white),
         (f"revision: {configuration.revision}", white),
@@ -123,6 +130,12 @@ def render_configuration_preview(
             )
             cv2.putText(reference, text, (x + 5, y + 21), color, font, 18)
 
+    if not configuration.is_approved:
+        cv2.rectangle(reference, (8, 8), (min(width - 1, 340), 48), (0, 0, 0), -1)
+        cv2.putText(
+            reference, "DRAFT - NOT APPROVED", (16, 36), (0, 200, 255), font, 24
+        )
+
     y = _PADDING + _FONT_SIZE
     for (text, color), row_height in zip(rows, row_heights):
         cv2.putText(
@@ -143,9 +156,20 @@ def save_configuration_preview(
     configuration_path: Path, image_path: Path, camera_id: CameraId, output_path: Path
 ) -> None:
     """Read both inputs, validate and encode, then exclusively create a new PNG."""
+    save_geometry_preview(
+        load_configuration(configuration_path), image_path, camera_id, output_path
+    )
+
+
+def save_geometry_preview(
+    configuration: ParkingConfiguration,
+    image_path: Path,
+    camera_id: CameraId,
+    output_path: Path,
+) -> None:
+    """Preview validated domain objects, including explicitly marked drafts."""
     if output_path.suffix.lower() != ".png":
         raise ValueError("Output must have a .png extension")
-    configuration = load_configuration(configuration_path)
     if not image_path.is_file():
         raise FileNotFoundError(f"Reference image does not exist: {image_path}")
     # EXIF autorotation would change the configured coordinate system.

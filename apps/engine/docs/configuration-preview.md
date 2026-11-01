@@ -12,6 +12,12 @@ gałąź `main`, czyste drzewo i indeks. Bez commita.
 - `save_configuration_preview(configuration_path, image_path, camera_id,
   output_path)` — wczytanie istniejącego JSON i obrazu, kontrola, zapis nowego PNG.
 
+Etap [LabelMe](labelme-slot-setup.md) dodaje `save_geometry_preview()` dla już
+zwalidowanych obiektów domenowych, także DRAFT bez metadanych zatwierdzenia.
+Renderer oznacza taki podgląd napisem DRAFT na obrazie i w legendzie. Standardowe
+CLI opisane poniżej nadal przyjmuje wyłącznie zatwierdzony plik konfiguracji;
+podgląd LabelMe uruchamia osobne polecenie `parkvision.labelme_configuration preview`.
+
 Przejrzano `ParkingConfiguration`, `SlotProjection`, `Camera`, `ParkingSlot`,
 `Point`, `Polygon` i istniejące rendery diagnostyczne. Używamy bez zmian
 `load_configuration()` oraz `projections_for_camera()`; nie ma drugiego schematu
@@ -115,7 +121,8 @@ syntetyczna `camera-east` wymaga 1280×720, więc CLI odrzuciło wejście i nie
 utworzyło PNG. Hashe obrazu rzeczywistego, obu referencji syntetycznych i źródła
 JSON pozostały identyczne przed i po próbach.
 
-Następny krok: przygotować i ręcznie zatwierdzić pierwsze rzeczywiste ROI wraz
-z właściwymi ID kamer/miejsc i referencjami; tym narzędziem sprawdzić ich zapis
-na każdej kamerze. Nie ma tu automatycznego tworzenia ani zatwierdzania miejsc.
+Ten krok został następnie wykonany w [pilocie LabelMe](labelme-slot-setup.md):
+użytkownik zweryfikował i zatwierdził trzy rzeczywiste ROI na `parking.jpg`.
+Zapisano `approved/parking-r1.json` i wygenerowano `approved-preview-r1.png`
+w prywatnym katalogu pilota. Nie ma tu automatycznego tworzenia ani zatwierdzania miejsc.
 Kod CV/ML, checkpointy, dane i format konfiguracji pozostają bez zmian.
