@@ -1,5 +1,14 @@
 # Farba parkingowa: pierwszy krok CV + ML
 
+**Binarna farba 2026-11-01:** wykonano jeden [eksperyment dwóch klas z pełną
+inicjalizacją AVM](/home/karoljaron/Projects/ParkVision/research/paint-segmentation/binary-paint-experiment.md).
+Na tych samych ROI CNR IoU paint **39,81%**, Dice **56,95%**, precision **64,26%**,
+recall **51,13%**; mokra kamera 3: IoU **62,77%**. Kamera 1 nadal jest słaba.
+Zachowano oryginalne maski i podział; curb jest negatywem tylko w widoku binarnym.
+Przygotowano wszystkie 17 porównań, FP/FN i natywne mapy P(paint).
+To ograniczona walidacja, bez automatycznej promocji, dalszego strojenia,
+fuzji CV+ML, otwierania PUCPR i commita. Starsze wpisy zachowują historyczne wyniki.
+
 **Transfer encodera AVM 2026-11-01:** wykonano jeden [kontrolowany wariant z nowym
 decoderem i głowicą](/home/karoljaron/Projects/ParkVision/research/paint-segmentation/avm-encoder-only.md).
 Na tych samych ROI CNR IoU paint wynosi **29,16%**, precision **45,26%**, recall
