@@ -1,0 +1,419 @@
+{
+  "stage": "Dataset Preparation + Model Improvement v1, final frozen comparison",
+  "date": "2026-11-08",
+  "status": "complete",
+  "artifact_root": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1",
+  "protocol_sha256": "2925279b82f8033134f53a09bff6f6fba8675c248ad2980d93d811290eaf95bb",
+  "candidate_checkpoint": {
+    "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/frozen/candidate.pt",
+    "sha256": "5f5672cfdea28cdb53942675d748d5f9d6c3abda5bc7fc18abe209d1d1331a23",
+    "original": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep/best.pt"
+  },
+  "baseline_checkpoint": {
+    "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/frozen/baseline.pt",
+    "sha256": "96901e9003a3710bba964e8cea7dc2cfa90d2c099ff102c98b3f02240748ce52",
+    "original": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/occupancy-pilot/paired-acpds-2026-11-03-v1/source/RCNN_128_square_gopro.pt"
+  },
+  "candidate_selected_epoch_before_test": 13,
+  "policy": {
+    "free_max": 0.1,
+    "occupied_min": 0.9,
+    "argmax_threshold": 0.5,
+    "detector_score": 0.6,
+    "vehicle_categories": [
+      "car",
+      "bus",
+      "truck",
+      "motorcycle"
+    ],
+    "D_floor": 0.15,
+    "D_margin": 0.08,
+    "C_floor": 0.0,
+    "C_margin": 0.0
+  },
+  "cohorts": {
+    "ACPDS-test": {
+      "root": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/occupancy-pilot/paired-acpds-2026-11-03-v1",
+      "frames": 27,
+      "rois": 1490,
+      "source_free": 885,
+      "source_occupied": 605,
+      "selection": "entire official test; publisher parking-disjoint split"
+    },
+    "CNR-Pisa": {
+      "root": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/occupancy-pilot/controlled-eval-2026-11-03-v1",
+      "frames": 24,
+      "rois": 636,
+      "source_free": 180,
+      "source_occupied": 456,
+      "camera_ids": [
+        "camera1",
+        "camera3"
+      ],
+      "selection": "all camera1/3 external_pilot records in frozen controlled manifest; entire physical site absent from candidate train/val"
+    }
+  },
+  "primary_D_results": {
+    "ACPDS-test": {
+      "baseline": {
+        "n": 1490,
+        "source_free": 885,
+        "source_occupied": 605,
+        "source_unknown": 0,
+        "matrix": {
+          "free": {
+            "free": 868,
+            "occupied": 9,
+            "unknown": 8
+          },
+          "occupied": {
+            "free": 14,
+            "occupied": 583,
+            "unknown": 8
+          },
+          "unknown": {
+            "free": 0,
+            "occupied": 0,
+            "unknown": 0
+          }
+        },
+        "correct_known": 1451,
+        "false_free": 14,
+        "false_occupied": 9,
+        "free_recall": 0.9807909604519774,
+        "occupied_recall": 0.9636363636363636,
+        "free_precision_known": 0.9841269841269841,
+        "occupied_precision_known": 0.9847972972972973,
+        "agreement_on_all_known": 0.9738255033557047,
+        "unknown": 16,
+        "coverage": 0.9892617449664429,
+        "unsupported_decisions_on_unknown_truth": 0,
+        "correct_unknown": 0
+      },
+      "candidate": {
+        "n": 1490,
+        "source_free": 885,
+        "source_occupied": 605,
+        "source_unknown": 0,
+        "matrix": {
+          "free": {
+            "free": 876,
+            "occupied": 5,
+            "unknown": 4
+          },
+          "occupied": {
+            "free": 12,
+            "occupied": 584,
+            "unknown": 9
+          },
+          "unknown": {
+            "free": 0,
+            "occupied": 0,
+            "unknown": 0
+          }
+        },
+        "correct_known": 1460,
+        "false_free": 12,
+        "false_occupied": 5,
+        "free_recall": 0.9898305084745763,
+        "occupied_recall": 0.9652892561983472,
+        "free_precision_known": 0.9864864864864865,
+        "occupied_precision_known": 0.9915110356536503,
+        "agreement_on_all_known": 0.9798657718120806,
+        "unknown": 13,
+        "coverage": 0.991275167785235,
+        "unsupported_decisions_on_unknown_truth": 0,
+        "correct_unknown": 0
+      }
+    },
+    "CNR-Pisa": {
+      "baseline": {
+        "n": 636,
+        "source_free": 180,
+        "source_occupied": 456,
+        "source_unknown": 0,
+        "matrix": {
+          "free": {
+            "free": 173,
+            "occupied": 5,
+            "unknown": 2
+          },
+          "occupied": {
+            "free": 10,
+            "occupied": 381,
+            "unknown": 65
+          },
+          "unknown": {
+            "free": 0,
+            "occupied": 0,
+            "unknown": 0
+          }
+        },
+        "correct_known": 554,
+        "false_free": 10,
+        "false_occupied": 5,
+        "free_recall": 0.9611111111111111,
+        "occupied_recall": 0.8355263157894737,
+        "free_precision_known": 0.9453551912568307,
+        "occupied_precision_known": 0.9870466321243523,
+        "agreement_on_all_known": 0.8710691823899371,
+        "unknown": 67,
+        "coverage": 0.8946540880503144,
+        "unsupported_decisions_on_unknown_truth": 0,
+        "correct_unknown": 0
+      },
+      "candidate": {
+        "n": 636,
+        "source_free": 180,
+        "source_occupied": 456,
+        "source_unknown": 0,
+        "matrix": {
+          "free": {
+            "free": 171,
+            "occupied": 8,
+            "unknown": 1
+          },
+          "occupied": {
+            "free": 6,
+            "occupied": 436,
+            "unknown": 14
+          },
+          "unknown": {
+            "free": 0,
+            "occupied": 0,
+            "unknown": 0
+          }
+        },
+        "correct_known": 607,
+        "false_free": 6,
+        "false_occupied": 8,
+        "free_recall": 0.95,
+        "occupied_recall": 0.956140350877193,
+        "free_precision_known": 0.9661016949152542,
+        "occupied_precision_known": 0.9819819819819819,
+        "agreement_on_all_known": 0.9544025157232704,
+        "unknown": 15,
+        "coverage": 0.9764150943396226,
+        "unsupported_decisions_on_unknown_truth": 0,
+        "correct_unknown": 0
+      }
+    }
+  },
+  "D_conflicts": {
+    "ACPDS-test": {
+      "baseline": {
+        "counts": {
+          "decided": 1474,
+          "low_confidence": 13,
+          "model_conflict": 3
+        },
+        "free_evidence_blocked_by_conflict": 2,
+        "false_free_prevented_by_conflict": 1
+      },
+      "candidate": {
+        "counts": {
+          "decided": 1477,
+          "model_conflict": 3,
+          "low_confidence": 10
+        },
+        "free_evidence_blocked_by_conflict": 2,
+        "false_free_prevented_by_conflict": 1
+      }
+    },
+    "CNR-Pisa": {
+      "baseline": {
+        "counts": {
+          "decided": 569,
+          "model_conflict": 42,
+          "low_confidence": 25
+        },
+        "free_evidence_blocked_by_conflict": 0,
+        "false_free_prevented_by_conflict": 42
+      },
+      "candidate": {
+        "counts": {
+          "decided": 621,
+          "low_confidence": 6,
+          "model_conflict": 9
+        },
+        "free_evidence_blocked_by_conflict": 0,
+        "false_free_prevented_by_conflict": 9
+      }
+    }
+  },
+  "pooled_diagnostic_only": {
+    "baseline": {
+      "n": 2126,
+      "source_free": 1065,
+      "source_occupied": 1061,
+      "source_unknown": 0,
+      "matrix": {
+        "free": {
+          "free": 1041,
+          "occupied": 14,
+          "unknown": 10
+        },
+        "occupied": {
+          "free": 24,
+          "occupied": 964,
+          "unknown": 73
+        },
+        "unknown": {
+          "free": 0,
+          "occupied": 0,
+          "unknown": 0
+        }
+      },
+      "correct_known": 2005,
+      "false_free": 24,
+      "false_occupied": 14,
+      "free_recall": 0.9774647887323944,
+      "occupied_recall": 0.9085768143261075,
+      "free_precision_known": 0.9774647887323944,
+      "occupied_precision_known": 0.9856850715746421,
+      "agreement_on_all_known": 0.9430856067732831,
+      "unknown": 83,
+      "coverage": 0.9609595484477893,
+      "unsupported_decisions_on_unknown_truth": 0,
+      "correct_unknown": 0
+    },
+    "candidate": {
+      "n": 2126,
+      "source_free": 1065,
+      "source_occupied": 1061,
+      "source_unknown": 0,
+      "matrix": {
+        "free": {
+          "free": 1047,
+          "occupied": 13,
+          "unknown": 5
+        },
+        "occupied": {
+          "free": 18,
+          "occupied": 1020,
+          "unknown": 23
+        },
+        "unknown": {
+          "free": 0,
+          "occupied": 0,
+          "unknown": 0
+        }
+      },
+      "correct_known": 2067,
+      "false_free": 18,
+      "false_occupied": 13,
+      "free_recall": 0.9830985915492958,
+      "occupied_recall": 0.9613572101790764,
+      "free_precision_known": 0.9830985915492958,
+      "occupied_precision_known": 0.9874152952565344,
+      "agreement_on_all_known": 0.9722483537158984,
+      "unknown": 28,
+      "coverage": 0.9868297271872061,
+      "unsupported_decisions_on_unknown_truth": 0,
+      "correct_unknown": 0
+    }
+  },
+  "manual_visibility": {
+    "n": 40,
+    "clear_known_correct": {
+      "baseline": 24,
+      "candidate": 24
+    },
+    "partial_known_correct": {
+      "baseline": 12,
+      "candidate": 12
+    },
+    "unreadable_n": 4,
+    "unsupported_unreadable_decisions": {
+      "baseline": 3,
+      "candidate": 4
+    },
+    "automatic_visibility_assessment_solved": false
+  },
+  "historical_baseline_consistency": {
+    "max_abs_score_difference": 0.00010530650615692139,
+    "mean_abs_score_difference": 3.294214133402585e-07,
+    "score_band_state_changes": 0,
+    "note": "Fresh baseline and candidate share RGB decoding and GPU execution; historical baseline used CPU and torchvision JPEG decoding"
+  },
+  "interpretation": {
+    "source_labels": "binary author labels do not establish visibility; evidence metrics are not confirmed live parking decisions",
+    "test_history": "Both cohorts were used in the historical baseline pilot. Neither was used in candidate gradient training, validation or checkpoint selection. This is held-out evaluation of this candidate, not a never-inspected project-wide blind test.",
+    "camera_domain": "ACPDS test uses action-camera imagery; CNR Pisa supplies external fixed-camera transfer evidence.",
+    "temporal": "Not evaluated: selected images are not a continuous timeline. Existing temporal v1 is unchanged.",
+    "promotion": "No automatic replacement of observer or production promotion; report tradeoffs including false-free."
+  },
+  "verification": {
+    "unit_tests": 72,
+    "black": "passed",
+    "flake8": "passed",
+    "independent_recount_of_prediction_matrices": "passed",
+    "preservation": {
+      "protocol_sha256": "2925279b82f8033134f53a09bff6f6fba8675c248ad2980d93d811290eaf95bb",
+      "original_input_files_unchanged": 22,
+      "legacy_protected_files_unchanged": 93,
+      "test_images_verified_after_inference": 51,
+      "original_roboflow_zips_unchanged": true,
+      "candidate_training_manifest_unchanged": true,
+      "post_test_training_performed": false,
+      "production_observer_changed": false,
+      "temporal_changed": false
+    },
+    "report_rebuild_without_model_inference": "passed"
+  },
+  "artifacts": {
+    "protocol.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/protocol.json",
+      "sha256": "2925279b82f8033134f53a09bff6f6fba8675c248ad2980d93d811290eaf95bb"
+    },
+    "protocol.sha256": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/protocol.sha256",
+      "sha256": "ea7bce9d6bf0273c1f05325cdd983f1f1a567ee11941d2bc763812ca57e039a1"
+    },
+    "execution-lock.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/execution-lock.json",
+      "sha256": "e90b13329e8c5ca89640e7605c96558dbb4824d19578333fcfab02991fa77571"
+    },
+    "comparison.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/comparison.json",
+      "sha256": "8b9328b877659e20aa8ee7287c555b07d13f966b7f88e0b533b8e12f6c1372ac"
+    },
+    "predictions.jsonl": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/predictions.jsonl",
+      "sha256": "ba03ea8f7e2461e456142191fc2211b2b5ab9bccddca65b8e746023aa9c69848"
+    },
+    "summary.csv": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/summary.csv",
+      "sha256": "c32b40b321dbde96efe0c3154bb61cd442846dd852980f05fe7a6a7ecb873901"
+    },
+    "comparison-chart.png": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/comparison-chart.png",
+      "sha256": "581e7b8f8ae9623cfa50027ce398cc4f872e2a1e733e4598e83443d7c5c25b1e"
+    },
+    "Raport-koncowego-porownania.md": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/Raport-koncowego-porownania.md",
+      "sha256": "ce76eaddc5a1719b78f77bc25080df2d4fe061ddf78e69759e6ed6e568640eeb"
+    },
+    "preservation-after.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/preservation-after.json",
+      "sha256": "1754c627f21d33a2cf8c196753864b610af856ec76156354cf41b5b46f75f1c1"
+    },
+    "build-report.py": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/build-report.py",
+      "sha256": "f7e26d0de4b402f18b77f41d4f063337189645b6ab5e90f0d2f95c881e4cd97d"
+    },
+    "frozen/final_compare.py": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/frozen/final_compare.py",
+      "sha256": "50dc3dc0779c3c05531eb8973518d1f4330fe5b41e05dd7dc3791a6b3667df61"
+    },
+    "frozen/comparison_metrics.py": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/final-comparison-v1/frozen/comparison_metrics.py",
+      "sha256": "42513949d651f95bfcaa07789c5276de0afa2fce75915d76dd05070a203490da"
+    }
+  },
+  "post_test_tuning_performed": false,
+  "production_promoted": false,
+  "temporal_evaluated": false,
+  "commit_performed": false,
+  "push_performed": false
+}

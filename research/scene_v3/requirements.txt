@@ -1,0 +1,3 @@
+# Supplement to the existing research/occupancy/training_v1 environment.
+pycocotools==2.0.11
+segmentation-models-pytorch==0.6.0

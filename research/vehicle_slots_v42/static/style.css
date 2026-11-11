@@ -1,0 +1,33 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #151c23; color: #eff4f8; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header, main { max-width: 1240px; margin: auto; padding: 1rem clamp(1rem,3vw,2rem); }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid #43515e; }
+h1 { font-size: 1.45rem; margin: 0; }
+h1 span { margin-left: .55rem; font-size: 1rem; font-weight: 500; color: #b9c9d8; }
+h2 { font-size: 1.16rem; margin: .4rem 0; }
+p { line-height: 1.5; margin: .45rem 0; }
+nav, footer { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; padding: .35rem 0 1rem; }
+button, input, select, textarea { font: inherit; padding: .45rem .6rem; color: inherit; background: #25323f; border: 1px solid #607082; border-radius: .4rem; }
+button { cursor: pointer; }
+button:disabled, select:disabled { opacity: .58; cursor: default; }
+:focus-visible { outline: 3px solid #85e7f2; outline-offset: 2px; }
+section, form, .suggestion { padding: .85rem; border: 1px solid #43515e; border-radius: .5rem; background: #1d2732; }
+.legend { display: flex; gap: .4rem 1rem; flex-wrap: wrap; font-size: .93rem; }
+.legend span:nth-child(1) { color: #50eafa; }
+.legend span:nth-child(2) { color: #ffaa37; }
+.legend span:nth-child(3) { color: #bfa4ff; }
+.images { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+figure { margin: .5rem 0; }
+img { display: block; width: 100%; height: auto; background: #151c23; border-radius: .25rem; }
+figcaption, #saved-time { color: #b9c9d8; font-size: .9rem; }
+summary { cursor: pointer; margin: .55rem 0; font-weight: 600; }
+.mono, pre { font-size: .83rem; font-family: ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.assessment { display: grid; grid-template-columns: 1fr 2fr; align-items: start; gap: .85rem; margin: .85rem 0; }
+.fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .6rem; }
+form label { display: grid; gap: .3rem; margin: .4rem 0; }
+textarea { resize: vertical; width: 100%; }
+.primary { background: #62dbe8; color: #142229; font-weight: 650; border-color: #62dbe8; }
+#message { flex: 1 1 100%; }
+#message[data-error="true"] { color: #ffbcad; }
+@media (max-width: 650px) { .images, .assessment { grid-template-columns: 1fr; } .fields { grid-template-columns: 1fr; } }

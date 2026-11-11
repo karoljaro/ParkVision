@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "kind": "experimental_offline_occupancy",
+  "synthetic_fixture": true,
+  "parking_id": "synthetic-parking",
+  "configuration_revision": 1,
+  "configuration_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "camera_id": "synthetic-camera",
+  "source_session": "synthetic-session",
+  "sequence": 10,
+  "captured_at": "2026-11-05T12:00:10+00:00",
+  "evaluated_at": "2026-11-05T12:00:10+00:00",
+  "evaluation_clock": "provided",
+  "max_age_seconds": 60,
+  "view_confirmed": true,
+  "image": {
+    "path": "synthetic-no-image",
+    "sha256": null,
+    "width": null,
+    "height": null
+  },
+  "status": "observed",
+  "error_detail": null,
+  "provenance": {
+    "baseline_id": "synthetic-fixture-not-inference",
+    "models": null
+  },
+  "observations": [
+    {
+      "slot_id": "synthetic-slot",
+      "state": "free",
+      "unknown_reason": null,
+      "confidence": null,
+      "p_occupied": null,
+      "detector_D": "unknown",
+      "detection_ids": [],
+      "visibility": "unassessed"
+    }
+  ],
+  "detections": []
+}

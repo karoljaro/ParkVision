@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ParkVision · Ocena relacji A/B</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="batch-data.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header><h1>ParkVision <span>Ocena relacji A/B</span></h1><p id="progress"></p></header>
+  <main>
+    <nav aria-label="Przykłady">
+      <button type="button" id="prev">← Poprzedni</button>
+      <label>Przykład <select id="examples"></select></label>
+      <button type="button" id="next">Następny →</button>
+    </nav>
+    <section aria-labelledby="case-title" class="case">
+      <h2 id="case-title"></h2>
+      <p id="identity" class="mono"></p>
+      <p class="legend"><span>Oceniany poligon</span> <span>Maska pojazdu</span> <span>Sąsiedni poligon</span></p>
+      <div class="images">
+        <figure><a id="detail-raw-link" target="_blank" rel="noopener"><img id="detail-raw" alt="Powiększenie oryginalnego obrazu"></a><figcaption>Oryginalne piksele</figcaption></figure>
+        <figure><a id="detail-overlay-link" target="_blank" rel="noopener"><img id="detail-overlay" alt="Powiększenie z maską i poligonami"></a><figcaption>Maska i poligony źródłowe</figcaption></figure>
+      </div>
+      <details><summary>Pełny kadr i nakładka</summary>
+        <div class="images">
+          <figure><a id="full-raw-link" target="_blank" rel="noopener"><img id="full-raw" loading="lazy" alt="Pełny oryginalny kadr"></a><figcaption>Oryginał</figcaption></figure>
+          <figure><a id="full-overlay-link" target="_blank" rel="noopener"><img id="full-overlay" loading="lazy" alt="Pełny kadr z nakładką"></a><figcaption>Nakładka</figcaption></figure>
+        </div>
+      </details>
+      <details><summary>Identyfikatory i pochodzenie</summary><pre id="provenance"></pre></details>
+    </section>
+    <div class="assessment">
+      <details class="suggestion"><summary>Propozycja z przeglądu</summary>
+        <p id="suggested-label"></p>
+        <p id="suggested-note"></p>
+        <p id="suggested-geometry"></p>
+      </details>
+      <form id="operator">
+        <h2>Ocena operatora</h2>
+        <div class="fields">
+          <label>Autor <input id="reviewer" type="text" autocomplete="name" required></label>
+          <label>Status <select id="status">
+            <option value="pending">Oczekuje</option>
+            <option value="accepted">Zaakceptowane</option>
+            <option value="rejected">Odrzucone</option>
+            <option value="needs_review">Wymaga kontroli</option>
+          </select></label>
+          <label>Relacja <select id="relation"></select></label>
+          <label>Geometria <select id="geometry"></select></label>
+          <label>Widoczność <select id="visibility"></select></label>
+        </div>
+        <label>Uzasadnienie <textarea id="note" rows="3" required placeholder="Wskaż linię, kontakt z nawierzchnią lub przyczynę niepewności."></textarea></label>
+        <button type="submit" class="primary">Zapisz ocenę</button>
+        <p id="saved-time"></p>
+      </form>
+    </div>
+    <footer>
+      <button type="button" id="export-progress">Pobierz postęp JSON</button>
+      <button type="button" id="import-progress">Wczytaj postęp JSON</button>
+      <input id="progress-file" type="file" accept=".json,application/json" hidden>
+      <button type="button" id="export-csv">Pobierz zaakceptowane CSV</button>
+      <p id="message" role="status" aria-live="polite"></p>
+    </footer>
+  </main>
+</body>
+</html>

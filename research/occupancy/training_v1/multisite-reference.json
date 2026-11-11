@@ -1,0 +1,167 @@
+{
+  "stage": "Dataset Preparation + Model Improvement v1, multisite training expansion",
+  "date": "2026-11-08",
+  "status": "complete",
+  "artifact_root": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1",
+  "model_architecture": "convnext_tiny_imagenet1k_v1_rgb_roi4",
+  "model_initialization": "ImageNet1K V1, new optimizer, seed 42",
+  "dataset_manifest": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/data/manifest.json",
+  "dataset_manifest_sha256": "30e7adc215dbdbf9501b27ea3d554857716eb5ffdd3373087e08d25463c9ec74",
+  "dataset_counts": {
+    "frames": {
+      "train": 279,
+      "val": 35
+    },
+    "samples": {
+      "train": 9664,
+      "val": 1904
+    },
+    "classes": {
+      "train": {
+        "1": 4695,
+        "0": 4969
+      },
+      "val": {
+        "0": 1073,
+        "1": 831
+      }
+    },
+    "train_sources": {
+      "UFPR04": 1362,
+      "UFPR05": 460,
+      "ACPDS-train": 7842
+    },
+    "acquisition": {
+      "inherited_base": 83,
+      "downloaded_member": 230,
+      "reused_cache": 1
+    }
+  },
+  "data_expansion": {
+    "base_manifest": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/data/manifest.json",
+    "base_manifest_sha256": "c6858f9b0e5390c60cc044ca36f261c0dcf090c0e1e03a2028fee7704ae696ff",
+    "added_source": "ACPDS official train only",
+    "license": "MIT, explicitly including dataset in Marek 2021",
+    "publisher_protocol": "https://arxiv.org/abs/2107.12207",
+    "physical_site_separation": "publisher-declared parking-disjoint official splits",
+    "physical_site_ids": null,
+    "source_sha256": "5c2bb62b142f856fffc111ea103736f4f507ec2cf3ad77b9724f8d85a9dfed78"
+  },
+  "source_licenses": {
+    "PKLot": "CC-BY-4.0",
+    "ACPDS": "MIT, dataset explicitly included in publisher declaration"
+  },
+  "source_protocol": "https://arxiv.org/abs/2107.12207",
+  "source_task": "per physical-slot ROI empty/occupied; parking-line datasets excluded",
+  "roboflow_training_images": 0,
+  "epochs_completed": 20,
+  "optimizer_steps": 12080,
+  "run": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep",
+  "selected_epoch": 13,
+  "selection_criterion": "minimum unweighted validation cross entropy, fixed before run",
+  "selected_validation_metrics": {
+    "source_accuracy": 0.9926470518112183,
+    "source_free_recall_at_0_5": 0.9925442934036255,
+    "source_occupied_recall_at_0_5": 0.9927797913551331,
+    "score_coverage_at_0_1_0_9": 0.9947478771209717,
+    "source_false_free_at_0_1": 3,
+    "source_free_total": 1073,
+    "source_occupied_total": 831,
+    "note": "Source-label diagnostics, not verified visibility or deployment quality"
+  },
+  "fixed_threshold_source_metrics": {
+    "source_free_total": 1073,
+    "source_occupied_total": 831,
+    "source_free_recall_at_0_1": 0.9888163805007935,
+    "source_occupied_recall_at_0_9": 0.9903730154037476,
+    "source_false_free_at_0_1": 3,
+    "source_false_occupied_at_0_9": 7,
+    "free_score_evidence_count": 1064,
+    "occupied_score_evidence_count": 830,
+    "score_abstention_count": 10,
+    "score_coverage": 0.9947478771209717,
+    "note": "Score bands versus source labels; visibility remains unassessed; no deployment decisions"
+  },
+  "last_validation_metrics": {
+    "source_accuracy": 0.9873949289321899,
+    "source_free_recall_at_0_5": 0.9804286956787109,
+    "source_occupied_recall_at_0_5": 0.9963898658752441,
+    "score_coverage_at_0_1_0_9": 0.9957982897758484,
+    "source_false_free_at_0_1": 2,
+    "source_free_total": 1073,
+    "source_occupied_total": 831,
+    "note": "Source-label diagnostics, not verified visibility or deployment quality"
+  },
+  "training_epoch_seconds": 1377.7770981660005,
+  "gpu": {
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "torch": "2.14.1+cu126",
+    "cuda_runtime": "12.6",
+    "cuda_available": true,
+    "nvidia_smi": "NVIDIA GeForce RTX 4070, 615.78.08, 12282 MiB",
+    "execution": "CUDA with access to RTX4070 outside restricted process",
+    "cublas_workspace_config": ":4096:8",
+    "precision": "FP32; mixed precision not enabled"
+  },
+  "checkpoints": [
+    {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep/best.pt",
+      "sha256": "5f5672cfdea28cdb53942675d748d5f9d6c3abda5bc7fc18abe209d1d1331a23"
+    },
+    {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep/last.pt",
+      "sha256": "2b0725f57b742fbb024bea38b7b37c838f4069bdcfe73dc2d4fb6847e8121cba"
+    }
+  ],
+  "source_code_sha256": {
+    "__init__.py": "d9a9824bfec6f09420d5cb3b49ee7c01df0a2dbad611cd9ca8762d00cce57a28",
+    "model.py": "b18eaccdd7b913e42f74b6cb8295db1d074327371a43dcc531ad67b77bb998b3",
+    "train.py": "7421bcbf55ae4ed2131bc15cc8f390bd341ec86bd69fbe3d2fc5239216ced0c7",
+    "data.py": "f9f98bf950b132b4109c90f433a5d04fce4b8073c20bd57b025eabd9a4ecde9f",
+    "acpds.py": "ec4d8a511c5871602a38dd677d786acb560155c1c1200e61ad625eeeb4736390"
+  },
+  "artifacts": {
+    "training-summary.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep/training-summary.json",
+      "sha256": "b13af59a2aa553e6d9c3baa559e1da8eb9787cab8fac9be62169df5ba9d0081a"
+    },
+    "history.jsonl": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep/history.jsonl",
+      "sha256": "6d792ccf58010c08ee484a563e9e9841839daab6cbb4812dd5aaec0d68ebb251"
+    },
+    "training-curves.png": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep/training-curves.png",
+      "sha256": "c7c4843503aef5641d2f0d2ed16f5277b8aeab3665db00d5c2e797a3a74f0323"
+    },
+    "validation-score-readback.jsonl": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep/validation-score-readback.jsonl",
+      "sha256": "db1dd4eeb2aa69a0fa5468a8b59056bab63077d53c8c1ad0fb62a77d97d3ffd8"
+    },
+    "domain-contract-readback.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/expansion-multisite-v1/runs/convnext-roi4-multisite-20ep/domain-contract-readback.json",
+      "sha256": "169bc984e038acab8f7569675257a4098a043b80f551b606429292f423833179"
+    }
+  },
+  "verification": {
+    "unit_tests": 60,
+    "black": "passed",
+    "flake8": "passed",
+    "checkpoint_readback": "passed",
+    "source_snapshot_matches": true,
+    "idempotent_preparation_without_download": "passed",
+    "preservation": {
+      "unchanged_prior_artifacts": 13,
+      "unchanged_legacy_files": 93,
+      "original_roboflow_zips_unchanged": true,
+      "validation_records_and_hashes_unchanged": true,
+      "new_test_images_downloaded": 0,
+      "heldout_test_used": false,
+      "baseline_inference_performed": false
+    }
+  },
+  "calibration_performed": false,
+  "heldout_test_used": false,
+  "baseline_comparison_performed": false,
+  "commit_performed": false,
+  "push_performed": false
+}

@@ -1,0 +1,121 @@
+{
+  "stage": "Dataset Preparation + Model Improvement v1, completed 20-epoch continuation",
+  "date": "2026-11-08",
+  "run": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070",
+  "status": "complete",
+  "first_run_reference": "/home/karoljaron/Projekty/ParkVision/research/occupancy/training_v1/run-reference.json",
+  "first_run_reference_sha256": "00795328365b137241425f01cd5cc0498ff62cc126e328807005dfe2e586b73f",
+  "epochs_completed": 20,
+  "new_gpu_epochs": 19,
+  "gpu": {
+    "gpu_name": "NVIDIA GeForce RTX 4070",
+    "cuda_available": true,
+    "torch": "2.14.1+cu126",
+    "torch_cuda_runtime": "12.6",
+    "device_count": 1,
+    "memory_total_bytes": 12527599616,
+    "nvidia_smi": "NVIDIA GeForce RTX 4070, 615.78.08, 12282 MiB",
+    "access": "GPU available outside restricted execution; device nodes absent in restricted execution",
+    "training_cublas_workspace_config": ":4096:8"
+  },
+  "optimizer_steps_this_run": 2166,
+  "optimizer_steps_total": 2280,
+  "selected_epoch": 4,
+  "selection_criterion": "minimum unweighted validation cross entropy, fixed before continuation",
+  "first_epoch_metrics": {
+    "source_accuracy": 0.694327712059021,
+    "source_free_recall_at_0_5": 0.4613233804702759,
+    "source_occupied_recall_at_0_5": 0.9951865077018738,
+    "score_coverage_at_0_1_0_9": 0.7095588445663452,
+    "source_false_free_at_0_1": 0,
+    "source_free_total": 1073,
+    "source_occupied_total": 831,
+    "note": "Source-label diagnostics, not verified visibility or deployment quality"
+  },
+  "selected_epoch_metrics": {
+    "source_accuracy": 0.776260495185852,
+    "source_free_recall_at_0_5": 0.6104380488395691,
+    "source_occupied_recall_at_0_5": 0.9903730154037476,
+    "score_coverage_at_0_1_0_9": 0.8035714030265808,
+    "source_false_free_at_0_1": 0,
+    "source_free_total": 1073,
+    "source_occupied_total": 831,
+    "note": "Source-label diagnostics, not verified visibility or deployment quality"
+  },
+  "fixed_threshold_source_metrics": {
+    "source_free_recall_at_0_1": 0.455731600522995,
+    "source_occupied_recall_at_0_9": 0.9374247789382935,
+    "source_false_free_at_0_1": 0,
+    "source_false_occupied_at_0_9": 262,
+    "free_score_evidence_count": 489,
+    "occupied_score_evidence_count": 1041,
+    "score_abstention_count": 374,
+    "note": "Score bands versus source labels; visibility remains unassessed; no deployment decisions or test evaluation"
+  },
+  "last_epoch_metrics": {
+    "source_accuracy": 0.7626050710678101,
+    "source_free_recall_at_0_5": 0.5852749347686768,
+    "source_occupied_recall_at_0_5": 0.9915764331817627,
+    "score_coverage_at_0_1_0_9": 0.8981092572212219,
+    "source_false_free_at_0_1": 0,
+    "source_free_total": 1073,
+    "source_occupied_total": 831,
+    "note": "Source-label diagnostics, not verified visibility or deployment quality"
+  },
+  "checkpoints": [
+    {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070/best.pt",
+      "sha256": "62dbe1a57d44c563735585ea2b017d0fd2c038d790a5a81ecb219ae06862a633"
+    },
+    {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070/last.pt",
+      "sha256": "0acb206eaf0794c2861ae0b8cf8f81429c26674c1c50433782ca8ec9c8c7578e"
+    }
+  ],
+  "occupancy_manifest_sha256": "c6858f9b0e5390c60cc044ca36f261c0dcf090c0e1e03a2028fee7704ae696ff",
+  "source_snapshot_sha256": {
+    "__init__.py": "d9a9824bfec6f09420d5cb3b49ee7c01df0a2dbad611cd9ca8762d00cce57a28",
+    "model.py": "b18eaccdd7b913e42f74b6cb8295db1d074327371a43dcc531ad67b77bb998b3",
+    "train.py": "7421bcbf55ae4ed2131bc15cc8f390bd341ec86bd69fbe3d2fc5239216ced0c7",
+    "data.py": "504e615ee0fb5ce9a9ae3b8f4ada25ba4fcaf9dd39fa15b7613caddb4c8f2d55",
+    "acpds.py": "e1c74d2de76cb9a54c6b146a37493869dcbb8bacd83a87faaefbff103b7cdef3"
+  },
+  "artifacts": {
+    "finetune-summary.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070/finetune-summary.json",
+      "sha256": "2f8ee97665f7d435ed854c324903a214aa0cec32fb93751db43e6daabbb17bc7"
+    },
+    "history.jsonl": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070/history.jsonl",
+      "sha256": "952ee304e16c45859ab4738ae8c8b52028b610a2d53fde85118e7931af3ccdd7"
+    },
+    "gpu-provenance.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070/gpu-provenance.json",
+      "sha256": "b27aabb316494b79a6f8b8a355287dd2245dd847b9bcc2f015244f4743b766e0"
+    },
+    "validation-score-readback.jsonl": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070/validation-score-readback.jsonl",
+      "sha256": "47a9b18d830b4598345f5a64cf44d91b3879ba4efe33b75ada14b196076a7b25"
+    },
+    "domain-contract-readback.json": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070/domain-contract-readback.json",
+      "sha256": "b674b00b9806635d57d2c99ee0fd1f44e4a7a4e2fca6048df3d8e5c29a1cb0cc"
+    },
+    "training-curves.png": {
+      "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-resume-20ep-rtx4070/training-curves.png",
+      "sha256": "9f2f08ba1132bb540921f9da9f0c6698a0afabe5c7be0761581a96745c4632b8"
+    }
+  },
+  "verification": {
+    "unit_tests": 56,
+    "black": "passed",
+    "flake8": "passed",
+    "best_checkpoint_readback": "passed",
+    "code_matches_executed_snapshot": true
+  },
+  "baseline_comparison_performed": false,
+  "heldout_test_used": false,
+  "calibration_performed": false,
+  "commit_performed": false,
+  "push_performed": false
+}

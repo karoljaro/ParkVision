@@ -1,0 +1,9 @@
+# Isolated research environment only. Choose the CUDA wheel for the target GPU.
+# The existing paint-segmentation venv already has these tested versions.
+torch==2.14.1
+torchvision==0.29.1
+numpy>=2.5.4,<3
+opencv-python-headless>=5.0.0.93
+pytest==9.1.1
+black
+flake8

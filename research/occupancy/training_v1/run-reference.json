@@ -1,0 +1,101 @@
+{
+  "stage": "Dataset Preparation + Model Improvement v1",
+  "date": "2026-11-08",
+  "architecture": "convnext_tiny_imagenet1k_v1_rgb_roi4",
+  "artifact_root": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1",
+  "occupancy_manifest": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/data/manifest.json",
+  "occupancy_manifest_sha256": "c6858f9b0e5390c60cc044ca36f261c0dcf090c0e1e03a2028fee7704ae696ff",
+  "occupancy_counts": {
+    "frames": {
+      "train": 48,
+      "val": 35
+    },
+    "samples": {
+      "train": 1822,
+      "val": 1904
+    },
+    "classes": {
+      "train": {
+        "1": 755,
+        "0": 1067
+      },
+      "val": {
+        "0": 1073,
+        "1": 831
+      }
+    }
+  },
+  "source_roles": {
+    "train": "PKLot UFPR04+UFPR05, CC-BY-4.0",
+    "val": "ACPDS official valid only, MIT"
+  },
+  "roboflow_manifest": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/roboflow-prepared-v1/images.jsonl",
+  "roboflow_manifest_sha256": "f1af0df5357a2d2f52a44ec99333166ee6f288b76c86af7bed0993515adf42b3",
+  "roboflow_archives": [
+    {
+      "path": "/home/karoljaron/Datasets/ParkVision/Parking Space Detection.v3i.coco-segmentation.zip",
+      "sha256": "a4483ff9afd09757878e4468413534517d96366c1747bf3d0e3670cb6ac8bc4a",
+      "task": "slot_geometry_only",
+      "splits": {
+        "train": 2000,
+        "valid": 400
+      }
+    },
+    {
+      "path": "/home/karoljaron/Datasets/ParkVision/Parking lines.v5i.coco-segmentation.zip",
+      "sha256": "88768f77bd1ec706ec11a7b530bc26f511286172a0a0673a9d61c92b0f351ff5",
+      "task": "paint_positive_polygons_only",
+      "splits": {
+        "train": 192,
+        "valid": 33
+      }
+    },
+    {
+      "path": "/home/karoljaron/Datasets/ParkVision/parking lot.v1i.coco.zip",
+      "sha256": "be37a26e2aa1df79293be9339eae74a9ea87e2e7f42d277fb57d09d026838c57",
+      "task": "vehicle_and_free_region_boxes_only",
+      "splits": {
+        "test": 86,
+        "train": 2133,
+        "valid": 116
+      }
+    }
+  ],
+  "roboflow_occupancy_training_images": 0,
+  "roboflow_training_exclusion": "Anotacje nie dostarczają occupied/free dla tych samych fizycznych ROI; przecieki i pochodzenie wymagają wyjaśnienia.",
+  "training": {
+    "optimizer_steps_this_run": 114,
+    "checkpoints": [
+      {
+        "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-first-epoch/best.pt",
+        "sha256": "f2711ea35714348854317b58737217a0acd1b99ef5f9c328ab7844afd3418094"
+      },
+      {
+        "path": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-first-epoch/last.pt",
+        "sha256": "fabbab8071f07198a46c42d420d69b0212ad09fb0430f498558aad2490dbf9ea"
+      }
+    ],
+    "quality_claim": "No comparison with frozen baseline performed"
+  },
+  "history": "/home/karoljaron/Dokumenty/ChatGPT/System parkingowy/dataset-model-improvement-2026-11-08-v1/runs/convnext-roi4-first-epoch/history.jsonl",
+  "device": "cpu",
+  "epochs_completed": 1,
+  "code_matches_executed_snapshot": {
+    "__init__.py": true,
+    "model.py": true,
+    "train.py": true,
+    "data.py": true,
+    "acpds.py": true
+  },
+  "verification": {
+    "unit_tests_passed": 50,
+    "black": "passed",
+    "flake8": "passed",
+    "source_zip_integrity": "passed",
+    "preserved_old_files": 93
+  },
+  "baseline_comparison_performed": false,
+  "model_quality_improvement_claimed": false,
+  "commit_performed": false,
+  "push_performed": false
+}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="pl"><meta charset="utf-8"><title>ParkVision · Widoczność ROI</title>
+<style>
+body{font:17px system-ui;background:#101922;color:#e8eef2;max-width:1200px;margin:28px auto;padding:0 24px}h1{font-size:28px}button,input,select{font:inherit;padding:10px;border-radius:6px;border:1px solid #8194a3;margin:4px;background:#203341;color:white}button{cursor:pointer}button.active{background:#12624e;border:2px solid #6eedbd}button:focus{outline:3px solid #eec868}main{display:grid;grid-template-columns:320px 1fr;gap:24px}img{max-width:100%;background:#293744}canvas{width:100%;max-height:620px;object-fit:contain}#crop{width:300px;image-rendering:auto}small{color:#b7c9d5}#note{width:80%}#progress{color:#6eedbd}label{display:inline-block;margin-right:12px}.guide{line-height:1.6}#identity{overflow-wrap:anywhere;font-size:13px}
+</style>
+<h1>Widoczność konkretnego miejsca</h1>
+<p class="guide">Oceń, czy da się ustalić stan <b>zaznaczonego ROI</b>. Samochód zajmujący to miejsce sam w sobie nie oznacza nieczytelności. Zasłonięcie przez sąsiednie auto może ją powodować. Nie zgaduj na podstawie pewności modelu.</p>
+<label>Operator <input id="operator" placeholder="Imię lub identyfikator"></label>
+<label>Kolejka <select id="filter"><option value="unassessed">Do oceny</option><option value="all">Wszystkie, także historyczne</option></select></label>
+<p id="progress"></p><main><div><img id="crop" alt="Crop miejsca z kontekstem"><p id="identity"></p><small>Kontur celu widoczny na pełnej klatce obok. Crop: RGB, 25% kontekstu.</small></div><canvas id="frame"></canvas></main>
+<p>
+<button data-label="clear">1 · Czytelne</button>
+<button data-label="partial-but-readable">2 · Częściowe, lecz czytelne</button>
+<button data-label="unreadable">3 · Nieczytelne</button>
+<button data-label="unassessed">U · Nie wiem / pomiń</button>
+</p><p><input id="note" placeholder="Opcjonalna uwaga: zasłonięcie, deszcz, rozmycie…"></p>
+<p><button id="prev">← Poprzednie</button><button id="next">Następne →</button><button id="export">Pobierz etykiety JSON</button><span id="message" role="status"></span></p>
+<small>Etykiety są zapisywane lokalnie w przeglądarce i eksportowane do osobnego pliku. Obrazy i historyczne etykiety pozostają zachowane. „Nie wiem” pozostaje unassessed.</small>
+<script>
+const data=__MANIFEST_DATA__;
+const key='parkvision-visibility-'+data.sha256;
+const $=id=>document.getElementById(id);
+let saved;try{saved=JSON.parse(localStorage.getItem(key)||'{}')}catch{saved={}}
+let labels=saved.records||{}, position=0, rows=[];
+$('operator').value=saved.operator||'';
+function persist(){localStorage.setItem(key,JSON.stringify({operator:$('operator').value,records:labels}))}
+function selectRows(){rows=data.records.filter(r=>$('filter').value==='all'||r.visibility==='unassessed');position=0;show()}
+function show(){
+ const r=rows[position];$('progress').textContent=rows.length?`${position+1} / ${rows.length} · zapisano ${Object.keys(labels).length} ocen w tej sesji`:'Brak rekordów w tej kolejce';
+ if(!r)return;
+ $('crop').src=r.crop;$('identity').textContent=`${r.provenance[0].source_path} · ${r.provenance[0].slot_projection_id} · ${r.provenance[0].day_id||'dzień nieznany'} · ${r.id.slice(0,12)}`;
+ $('note').value=labels[r.id]?.note||'';
+ const value=labels[r.id]?.visibility||r.visibility;
+ document.querySelectorAll('[data-label]').forEach(b=>b.classList.toggle('active',b.dataset.label===value));
+ const img=new Image();img.onload=()=>{if(rows[position]?.id!==r.id)return;const c=$('frame');c.width=img.width;c.height=img.height;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);ctx.beginPath();r.roi_normalized.forEach(([x,y],i)=>{const p=[x*(img.width-1),y*(img.height-1)];i?ctx.lineTo(...p):ctx.moveTo(...p)});ctx.closePath();ctx.fillStyle='#00ffc32b';ctx.fill();ctx.strokeStyle='#00ffc3';ctx.lineWidth=Math.max(3,img.width/350);ctx.stroke()};img.src=r.frame;
+}
+function label(value){const r=rows[position];if(!r)return;labels[r.id]={visibility:value,note:$('note').value,saved_at:new Date().toISOString()};persist();show();$('message').textContent='Zapisano ocenę';}
+function step(n){position=Math.max(0,Math.min(rows.length-1,position+n));$('message').textContent='';show()}
+document.querySelectorAll('[data-label]').forEach(b=>b.onclick=()=>label(b.dataset.label));
+$('prev').onclick=()=>step(-1);$('next').onclick=()=>step(1);$('filter').onchange=selectRows;$('operator').onchange=persist;
+$('note').onchange=()=>{const r=rows[position];if(r&&labels[r.id]){labels[r.id].note=$('note').value;persist()}};
+$('export').onclick=()=>{if(!$('operator').value.trim()){$('message').textContent='Wpisz identyfikator operatora';return}const payload={schema_version:1,manifest_sha256:data.sha256,operator:$('operator').value,records:labels};const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='visibility-labels.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;const map={'1':'clear','2':'partial-but-readable','3':'unreadable','u':'unassessed'};if(map[e.key])label(map[e.key]);if(e.key==='ArrowRight')step(1);if(e.key==='ArrowLeft')step(-1)});
+selectRows();
+</script></html>

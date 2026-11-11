@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "description": "SYNTHETIC: declared decisions only; no video, inference or accuracy evidence.",
+  "events": [
+    {
+      "observation": "observation-000.json"
+    },
+    {
+      "observation": "observation-001.json"
+    },
+    {
+      "observation": "observation-002.json"
+    },
+    {
+      "observation": "observation-003.json"
+    },
+    {
+      "observation": "observation-004.json"
+    },
+    {
+      "observation": "observation-005.json"
+    },
+    {
+      "observation": "observation-006.json"
+    },
+    {
+      "observation": "observation-007.json"
+    },
+    {
+      "observation": "observation-008.json"
+    },
+    {
+      "observation": "observation-009.json"
+    },
+    {
+      "observation": "observation-010.json"
+    },
+    {
+      "observation": "observation-011.json"
+    },
+    {
+      "tick_at": "2026-11-05T12:00:12+00:00"
+    },
+    {
+      "tick_at": "2026-11-05T12:00:14+00:00"
+    },
+    {
+      "tick_at": "2026-11-05T12:00:16+00:00"
+    },
+    {
+      "disconnect_at": "2026-11-05T12:00:17+00:00"
+    }
+  ]
+}
