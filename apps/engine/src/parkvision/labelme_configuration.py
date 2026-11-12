@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 
 import cv2
+import numpy as np
 
 from .configuration import (
     ParkingConfiguration,
@@ -80,8 +81,11 @@ def load_labelme_configuration(
     image_bytes = image_path.read_bytes()
     if sha256(image_bytes).hexdigest() != expected_hash:
         raise ValueError("Reference image differs from image_sha256")
-    image = cv2.imread(
-        str(image_path), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION
+    if not image_bytes:
+        raise ValueError("Cannot decode LabelMe reference image")
+    image = cv2.imdecode(
+        np.frombuffer(image_bytes, dtype=np.uint8),
+        cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION,
     )
     if image is None:
         raise ValueError("Cannot decode LabelMe reference image")

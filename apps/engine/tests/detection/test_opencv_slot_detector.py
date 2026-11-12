@@ -1,4 +1,5 @@
 import datetime
+from math import dist
 from pathlib import Path
 from typing import cast
 
@@ -145,7 +146,7 @@ def test_rejects_unsupported_image_shapes(image: NDArray[np.uint8]) -> None:
 
 
 @pytest.mark.parametrize("marked", [False, True], ids=["blank", "marked"])
-def test_slot_detection_explicitly_remains_unimplemented(
+def test_insufficient_evidence_returns_no_polygon(
     marked: bool,
     marked_frame: Frame,
     tmp_path: Path,
@@ -158,8 +159,79 @@ def test_slot_detection_explicitly_remains_unimplemented(
     monkeypatch.chdir(tmp_path)
     detector: SlotDetector = OpenCVSlotDetector()
 
-    with pytest.raises(NotImplementedError, match="Parking slot assembly"):
-        detector.detect(frame)
+    assert detector.detect(frame) == ()
 
     np.testing.assert_array_equal(frame.image, original)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_actual_lsd_recovers_adjacent_perspective_slots(
+    geometry_row_image: NDArray[np.uint8],
+) -> None:
+    frame = make_frame(geometry_row_image)
+    detector = OpenCVSlotDetector()
+    result = detector.analyze(frame)
+    proposals = detector.detect(frame)
+
+    assert len(proposals) == 3
+    assert len(result.pairs) >= 6
+    assert len(result.topology.junctions) >= 6
+    assert result.support
+    assert any(candidate.status == "observed" for candidate in result.candidates)
+    assert all(proposal.camera_id == frame.camera_id for proposal in proposals)
+    assert all(len(proposal.polygon.vertices) == 4 for proposal in proposals)
+    assert all(
+        0 <= coordinate <= 1
+        for proposal in proposals
+        for point in proposal.polygon.vertices
+        for coordinate in (point.x, point.y)
+    )
+    # The left-hand slot is visibly wider at the near rail.
+    left = min(proposals, key=lambda p: min(v.x for v in p.polygon.vertices))
+    vertices = left.polygon.vertices
+    horizontal_widths = sorted(
+        abs(start.x - end.x) * (geometry_row_image.shape[1] - 1)
+        for start, end in zip(vertices, vertices[1:] + vertices[:1])
+        if abs(start.y - end.y) < 0.02
+    )
+    assert horizontal_widths == pytest.approx([75, 91], abs=2)
+    assert detector.detect(frame) == proposals
+
+
+def test_isolated_vehicle_like_outline_is_insufficient() -> None:
+    image = np.full((260, 440, 3), 35, dtype=np.uint8)
+    cv2.rectangle(image, (110, 65), (275, 210), (230, 230, 230), thickness=5)
+    result = OpenCVSlotDetector().analyze(make_frame(image))
+    assert result.segments
+    assert all(
+        item.status == "unresolved" and item.proposal is None
+        for item in result.candidates
+    )
+
+
+def test_actual_lsd_marks_a_short_occluded_separator_span() -> None:
+    image = np.full((260, 440, 3), 35, dtype=np.uint8)
+    paint = (230, 230, 230)
+    for y in (44, 203):
+        cv2.line(image, (35, y), (390, y), paint, 3)
+    for x in (72, 154, 242, 327):
+        cv2.line(image, (x, 44), (x, 203), paint, 3)
+    cv2.rectangle(image, (140, 111), (170, 120), (35, 35, 35), -1)
+
+    result = OpenCVSlotDetector().analyze(make_frame(image))
+    assert sum(item.proposal is not None for item in result.candidates) == 3
+    gaps = [
+        span
+        for item in result.candidates
+        if item.proposal is not None
+        for span in item.boundaries
+        if span.kind == "estimated"
+        and len(span.line_ids) == 1
+        and 100
+        < min(span.start[1], span.end[1])
+        < max(span.start[1], span.end[1])
+        < 130
+    ]
+    assert len(gaps) == 2
+    assert gaps[0] == gaps[1]
+    assert 9 < dist(gaps[0].start, gaps[0].end) < 18
