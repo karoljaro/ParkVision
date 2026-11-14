@@ -83,7 +83,7 @@ def assemble_slots(
     rows, anchor_index = _anchors(topology, support, pairs, evidence, min_depth)
     proposed = []
     for key in sorted(rows):
-        row = sorted(rows[key], key=lambda anchor: anchor.position_on_rail)
+        row = _distinct_anchors(rows[key], min(5.0, 0.4 * min_width))
         if len({anchor.separator_id for anchor in row}) < 3:
             continue
         gaps = [
@@ -128,11 +128,13 @@ def assemble_slots(
             )
 
     if not proposed:
-        return (
-            SlotCandidate(
-                "unresolved", None, (), (), "No row with adjacent supported separators"
-            ),
-        )
+        if not pairs:
+            reason = "No separator with two supported paint edges"
+        elif not rows:
+            reason = "No transverse intersection with source support and usable depth"
+        else:
+            reason = "No row with three adjacent supported separators"
+        return (SlotCandidate("unresolved", None, (), (), reason),)
     return _select_nonoverlapping(proposed, width, height)
 
 
@@ -233,6 +235,25 @@ def _supported(measurement: LineSourceSupport) -> bool:
     )
 
 
+def _distinct_anchors(anchors: list[_Anchor], tolerance: float) -> list[_Anchor]:
+    """Resolve duplicate hits at the same corner before finding adjacent bays."""
+    ordered = sorted(anchors, key=lambda anchor: anchor.position_on_rail)
+    row = []
+    cluster_start = 0.0
+    for anchor in ordered:
+        if (
+            row
+            and anchor.position_on_rail - cluster_start <= tolerance
+            and _dot(row[-1].direction, anchor.direction) >= _MIN_LOCAL_ALIGNMENT
+        ):
+            if anchor.depth > row[-1].depth:
+                row[-1] = anchor
+            continue
+        row.append(anchor)
+        cluster_start = anchor.position_on_rail
+    return row
+
+
 def _compatible(first: _Anchor, second: _Anchor, min_width: float) -> bool:
     gap = _distance(first.position, second.position)
     return (
@@ -263,14 +284,18 @@ def _observed_closure(
     best = None
     best_depth = float("inf")
     for left in anchor_index[first.separator_id]:
+        rear = evidence[left.rail_id]
         if (
             left.rail_id == first.rail_id
-            or abs(_dot(front_direction, evidence[left.rail_id].direction))
-            < _MIN_BACK_ALIGNMENT
+            or abs(_dot(front_direction, rear.direction)) < _MIN_BACK_ALIGNMENT
         ):
             continue
+        # Cross-sections can end inside the paint at a T junction. Both
+        # intersections still require source support, and the final boundary
+        # check accounts for any remaining unsupported span.
+        corner_reach = max(5.0, min(9.0, 2.0 + 0.8 * rear.width_px))
         depth_first = _dot(_subtract(left.position, first.position), first.direction)
-        if not 0.44 * first.depth <= depth_first <= first.depth + 5:
+        if not 0.44 * first.depth <= depth_first <= first.depth + corner_reach:
             continue
         for right in anchor_index[second.separator_id]:
             if left.rail_id != right.rail_id:
@@ -278,7 +303,7 @@ def _observed_closure(
             depth_second = _dot(
                 _subtract(right.position, second.position), second.direction
             )
-            if not 0.44 * second.depth <= depth_second <= second.depth + 5:
+            if not 0.44 * second.depth <= depth_second <= second.depth + corner_reach:
                 continue
             if not 0.55 <= depth_first / depth_second <= 1.82:
                 continue
@@ -323,9 +348,19 @@ def _estimated_closure(
     for neighbor in _closure_neighbors(row, index, context, gap):
         other = row[neighbor]
         other_tip = _recover_tip(row, neighbor, gap, width, height) or other.tip
+        before = neighbor < index
+        corner = first_tip if before else second_tip
+        offset = _subtract(other_tip, corner)
+        outward = _dot(offset, direction) * (-1 if before else 1)
+        front_spacing = _distance(
+            other.position, (first if before else second).position
+        )
+        # The third tip should continue the same ordering and local perspective.
+        relative_spacing = outward / front_spacing
         if (
             _interior(other_tip, width, height)
-            and abs(_cross(_subtract(other_tip, first_tip), direction)) <= tolerance
+            and abs(_cross(offset, direction)) <= tolerance
+            and 0.45 * back_gap / gap <= relative_spacing <= 2.0 * back_gap / gap
             and not _has_continuation(other, evidence)
         ):
             return (
@@ -435,6 +470,19 @@ def _build_candidate(
         return _unresolved(first, second, "Inconsistent or off-frame boundaries")
     if _has_inner_separator(points, first, second, evidence, gap):
         return _unresolved(first, second, "Visible inner separator divides this area")
+    depth = min(_distance(points[0], points[3]), _distance(points[1], points[2]))
+    min_footprint_depth = 0.65 * max(gap, back_gap)
+    if depth < min_footprint_depth:
+        return _unresolved(
+            first,
+            second,
+            f"Shallow marking pattern ({depth:.1f} px depth, "
+            f"minimum {min_footprint_depth:.1f} px)",
+        )
+    if _has_hatching(points, evidence, first, second, min(gap, back_gap, depth)):
+        return _unresolved(
+            first, second, "Repeated diagonal strokes form a hatched area"
+        )
     try:
         polygon = Polygon(
             tuple(Point(x / (width - 1), y / (height - 1)) for x, y in points)
@@ -469,9 +517,14 @@ def _build_candidate(
             for span in spans
             if span.kind == "estimated"
         )
-        if missing > min(28.0, 0.26 * length, 0.45 * gap):
+        budget = min(28.0, 0.26 * length, 0.45 * gap)
+        if missing > budget:
+            edge = ("front rail", "second separator", "rear rail", "first separator")
             return _unresolved(
-                first, second, "Insufficient source fragments on a boundary"
+                first,
+                second,
+                f"Insufficient source fragments on {edge[index]} "
+                f"(line {line_id}, {missing:.1f} px missing, limit {budget:.1f} px)",
             )
         boundaries.extend(spans)
 
@@ -524,6 +577,50 @@ def _has_inner_separator(
             )
             if inside >= 2:
                 return True
+    return False
+
+
+def _has_hatching(
+    points: tuple[PixelPoint, ...],
+    evidence: Mapping[int, _MarkingEvidence],
+    first: _Anchor,
+    second: _Anchor,
+    local_size: float,
+) -> bool:
+    contour = np.array(points, dtype=np.float32)
+    front_direction = _direction(first.position, second.position)
+    margin = max(3.0, 0.07 * local_size)
+    strokes = []
+    for marking in evidence.values():
+        if (
+            marking.width_px == 0
+            or abs(_dot(marking.direction, front_direction)) >= _MIN_LOCAL_ALIGNMENT
+            or abs(_dot(marking.direction, first.direction)) >= _MIN_LOCAL_ALIGNMENT
+        ):
+            continue
+        for lo, hi in marking.intervals:
+            if hi - lo < max(12.0, 0.45 * local_size):
+                continue
+            samples = tuple(
+                _advance(marking.line.start, marking.direction, lo + f * (hi - lo))
+                for f in (0.25, 0.5, 0.75)
+            )
+            if all(cv2.pointPolygonTest(contour, p, True) > margin for p in samples):
+                strokes.append((marking.direction, samples[1]))
+                break
+    for direction, center in strokes:
+        offsets = sorted(
+            _cross(_subtract(other, center), direction)
+            for heading, other in strokes
+            if abs(_dot(direction, heading)) >= cos(radians(10))
+        )
+        # Multiple fitted copies of the same stroke count once.
+        distinct = []
+        for offset in offsets:
+            if not distinct or offset - distinct[-1] > margin:
+                distinct.append(offset)
+        if len(distinct) >= 3:
+            return True
     return False
 
 
@@ -587,8 +684,8 @@ def _select_nonoverlapping(
     for candidate in sorted(
         candidates,
         key=lambda item: (
-            item.status != "observed",
             item.proposal is None,
+            _estimated_fraction(item),
             item.junction_ids,
         ),
     ):
@@ -629,6 +726,16 @@ def _select_nonoverlapping(
     return tuple(selected) + tuple(
         item for ids, item in sorted(unresolved.items()) if ids not in covered_nodes
     )
+
+
+def _estimated_fraction(candidate: SlotCandidate) -> float:
+    lengths = [
+        (_distance(span.start, span.end), span.kind) for span in candidate.boundaries
+    ]
+    total = sum(length for length, _ in lengths)
+    if total == 0:
+        return 1.0
+    return sum(length for length, kind in lengths if kind == "estimated") / total
 
 
 def _node_pairs(ids: tuple[int, ...]) -> list[tuple[int, ...]]:

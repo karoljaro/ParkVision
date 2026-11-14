@@ -21,6 +21,8 @@ def _row(
     shortened_tip: float = 190,
     interruption: tuple[float, float] | None = None,
     continuation: bool = False,
+    hatching: bool = False,
+    duplicate_hit: bool = False,
 ) -> tuple[SlotCandidate, ...]:
     """Separate exact geometric evidence from variability in OpenCV extraction."""
     pairs = []
@@ -57,6 +59,11 @@ def _row(
         marking((35.0, 190.0), (310.0, 190.0), None)
     if continuation:
         marking((125.0, 200.0), (125.0, 228.0), None)
+    if duplicate_hit:
+        marking((128.0, 45.0), (128.0, 190.0), None)
+    if hatching:
+        for y in (61.0, 87.0, 113.0):
+            marking((76.0, y), (113.0, y + 51.0), None)
     data = tuple(pairs)
     topology = find_topology_candidates(data)
     support = measure_topology_support(topology, data, groups)
@@ -145,3 +152,14 @@ def test_apparent_tip_with_observed_continuation_is_not_a_rear_corner() -> None:
     candidates = _row(rear=False, continuation=True)
     assert sum(item.proposal is not None for item in candidates) < 3
     assert any("continuation" in item.reason for item in candidates)
+
+
+def test_duplicate_hits_do_not_split_or_block_neighboring_bays() -> None:
+    candidates = _row(duplicate_hit=True)
+    assert sum(item.proposal is not None for item in candidates) == 3
+
+
+def test_three_repeated_diagonal_strokes_veto_only_the_hatched_bay() -> None:
+    candidates = _row(hatching=True)
+    assert sum(item.proposal is not None for item in candidates) == 2
+    assert any("hatched" in item.reason for item in candidates if item.proposal is None)

@@ -1,7 +1,9 @@
 """Render the reference, line evidence and draft ROI in separate panels."""
 
+from collections import defaultdict
 from collections.abc import Callable
 from math import hypot
+from textwrap import wrap
 
 import cv2
 import numpy as np
@@ -98,6 +100,17 @@ def _line_panel(
         start, end = display(pair.centerline.start), display(pair.centerline.end)
         _line(image, start, end, _BACKGROUND, 4)
         _line(image, start, end, _AXIS, 2)
+    used_context = {
+        line_id
+        for candidate in result.candidates
+        if candidate.proposal is not None
+        for span in candidate.boundaries
+        for line_id in span.line_ids
+        if line_id not in axis_ids
+    }
+    for line in result.topology.lines:
+        if line.segment_id in used_context:
+            _line(image, display(line.start), display(line.end), _AXIS, 1)
     for endpoint in result.topology.endpoints:
         if endpoint.line_id in axis_ids:
             cv2.circle(
@@ -189,8 +202,26 @@ def render_initialization_preview(
         return xy[0] * x_scale, xy[1] * y_scale
 
     panel_width = max(width, 330)
+    rejected = defaultdict(list)
+    for index, candidate in enumerate(result.candidates, start=1):
+        if candidate.status == "unresolved":
+            rejected[candidate.reason].append(str(index))
+    rejection_lines = [
+        line
+        for reason, ids in rejected.items()
+        for line in wrap(
+            f"{', '.join(ids)}  |  {reason}",
+            width=110,
+            subsequent_indent="    ",
+        )
+    ]
+    rejection_height = 38 + 22 * len(rejection_lines) if rejection_lines else 0
     preview = np.empty(
-        (_HEADER + height + _FOOTER, 3 * panel_width + 2 * _PANEL_GAP, 3),
+        (
+            _HEADER + height + _FOOTER + rejection_height,
+            3 * panel_width + 2 * _PANEL_GAP,
+            3,
+        ),
         dtype=np.uint8,
     )
     preview[:] = _BACKGROUND
@@ -223,4 +254,9 @@ def render_initialization_preview(
         " | numbered candidates refer to evidence.json"
     )
     _caption(preview, summary, (14, _HEADER + height + 54), scale=0.59)
+    if rejection_lines:
+        start = _HEADER + height + _FOOTER
+        _caption(preview, "UNRESOLVED CANDIDATES", (14, start + 20), _UNRESOLVED)
+        for index, line in enumerate(rejection_lines, start=1):
+            _caption(preview, line, (14, start + 20 + index * 22), scale=0.54)
     return preview

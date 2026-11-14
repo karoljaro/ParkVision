@@ -6,11 +6,9 @@ import numpy as np
 from ..capture.frame import Frame
 from ..domain.types import CameraId
 from .initialization import GeometryInitialization
-from .line_fitting import fit_group_line
 from .line_segment import LineSegment
-from .marking_fragments import pair_marking_fragments
+from .marking_fragments import recover_marking_fragments
 from .marking_topology import find_topology_candidates
-from .segment_merging import group_segments
 from .slot_assembly import assemble_slots
 from .slot_detector import SlotDetector
 from .slot_proposal import SlotProposal
@@ -64,20 +62,7 @@ class OpenCVSlotDetector(SlotDetector):
         segments = self.extract_segments(frame)
         height, width = frame.image.shape[:2]
         scale = max(0.5, hypot(width, height) / 1440.0)
-        # Fitted extents can bridge a short gap; observations use source fragments.
-        groups = group_segments(
-            tuple(segment for segment in segments if segment.length >= 7.5 * scale),
-            angle_tolerance=3.0,
-            distance_tolerance=max(1.25, min(4.0, 2.9 * scale)),
-            gap_tolerance=max(20.0, min(40.0, 33.3 * scale)),
-        )
-        first_id = max((segment.segment_id for segment in segments), default=-1) + 1
-        fitted = tuple(
-            fit_group_line(group, segment_id=first_id + offset)
-            for offset, group in enumerate(groups)
-        )
-        sources = {line.segment_id: group for line, group in zip(fitted, groups)}
-        fitted, sources, pairs = pair_marking_fragments(fitted, sources, scale)
+        fitted, sources, pairs = recover_marking_fragments(frame.image, segments, scale)
         paired_ids = {edge.segment_id for pair in pairs for edge in pair.edges}
         topology = find_topology_candidates(
             pairs,

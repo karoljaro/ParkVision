@@ -28,7 +28,9 @@ labelme --nodata "$REVIEW/draft.json"
 propozycje ROI. Linie ciągłe oznaczają fragmenty wsparte obserwacją, kreskowane
 oznaczają oszacowanie, a `?` wskazuje brak rozstrzygnięcia. Numery odpowiadają
 `candidate_id` w `evidence.json`. Dowody wskazują linie, ich źródłowe odcinki,
-węzły i powód decyzji. Szkic odnosi się do hasha i orientacji obrazu. Jeśli
+węzły i powód decyzji. Pod podglądem jest lista powodów dla oznaczonych
+hipotez. Brak wsparcia na granicy podaje ID linii, długość luki i jej limit.
+Szkic odnosi się do hasha i orientacji obrazu. Jeśli
 metadane EXIF zmieniają wyświetlaną orientację, najpierw zapisz osobną
 referencję z ustaloną orientacją pikseli.
 
@@ -76,10 +78,16 @@ z pliku. Zmiana pozycji kamery, kadru lub obiektywu wymaga ponownego przeglądu.
 
 ## Zakres
 
-Detektor opiera się na lokalnej powtarzalności separatorów i wspólnej granicy
-poprzecznej. Szacuje krótką przerwę albo brakujący fragment w obrębie
-potwierdzonego sąsiedztwa. Zakręty, nieregularne końce rzędów, pofragmentowana
-farba i długie zasłonięcia wymagają przeglądu. Dopasowany odcinek może łączyć
-dwie obserwacje, a rozkład rzeczywistego wsparcia w luce pozostaje jawny.
-Geometria nie korzysta z obrysu pojazdu. Wyjściem detektora jest szkic,
-którego akceptację zapisuje istniejący workflow konfiguracji.
+Detektor szuka wąskiej, jasnej farby na krótkich przekrojach prostopadłych
+do odcinków LSD. Zgodne środki przekrojów pomagają połączyć fragmenty
+separatora. Granice i węzły nadal mierzą wsparcie w oryginalnych odcinkach LSD.
+Sąsiednie separatory muszą mieć wspólną granicę poprzeczną i wsparcie trzeciego
+separatora. Przy oszacowaniu drugiej granicy sprawdzany jest także porządek
+i rozstaw ich końców w lokalnej perspektywie. Powtarzalne ukośne kreskowanie
+wewnątrz obrysu i bardzo płytkie układy wstrzymują propozycję.
+
+Zakręty, ciemne lub wyblakłe oznakowanie, nieregularne końce rzędów, skrajna
+perspektywa i długie zasłonięcia mogą wymagać ręcznej korekty. Geometria
+powstaje z obrazu nawierzchni i lokalnego układu oznakowania. Wyjściem
+detektora jest szkic, którego akceptację zapisuje istniejący workflow
+konfiguracji.

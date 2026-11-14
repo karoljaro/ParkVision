@@ -177,7 +177,12 @@ def test_actual_lsd_recovers_adjacent_perspective_slots(
     assert len(result.pairs) >= 6
     assert len(result.topology.junctions) >= 6
     assert result.support
-    assert any(candidate.status == "observed" for candidate in result.candidates)
+    assert sum(candidate.status == "observed" for candidate in result.candidates) >= 2
+    assert all(
+        len(candidate.junction_ids) == 4
+        for candidate in result.candidates
+        if candidate.proposal is not None
+    )
     assert all(proposal.camera_id == frame.camera_id for proposal in proposals)
     assert all(len(proposal.polygon.vertices) == 4 for proposal in proposals)
     assert all(
@@ -207,6 +212,62 @@ def test_isolated_vehicle_like_outline_is_insufficient() -> None:
         item.status == "unresolved" and item.proposal is None
         for item in result.candidates
     )
+
+
+def test_dark_strip_edges_do_not_establish_painted_separators(
+    geometry_row_image: NDArray[np.uint8],
+) -> None:
+    detector = OpenCVSlotDetector()
+    result = detector.analyze(make_frame(cv2.bitwise_not(geometry_row_image)))
+    assert result.segments
+    assert all(candidate.proposal is None for candidate in result.candidates)
+
+
+def test_cctv_pilot_recovers_three_individual_left_bays() -> None:
+    image = cv2.imread(str(Path(__file__).resolve().parents[2] / "samples/parking.jpg"))
+    height, width = image.shape[:2]
+    result = OpenCVSlotDetector().analyze(make_frame(image))
+    polygons = [
+        np.array(
+            [
+                (point.x * (width - 1), point.y * (height - 1))
+                for point in candidate.proposal.polygon.vertices
+            ],
+            dtype=np.float32,
+        )
+        for candidate in result.candidates
+        if candidate.proposal is not None
+    ]
+    # Cropped to the three operator-reviewed bays; tolerances are for this
+    # development image and allow variation in subpixel LSD fits.
+    separators = (
+        ((32.5, 408), (480.5, 280)),
+        ((66.5, 461), (539.5, 312.25)),
+        ((109, 525.5), (609.5, 350.5)),
+        ((161.5, 605.5), (690, 394.25)),
+    )
+    matches = []
+    for (left_a, right_a), (left_b, right_b) in zip(separators, separators[1:]):
+        expected = np.array((left_a, right_a, right_b, left_b), dtype=np.float32)
+        ious = []
+        for polygon in polygons:
+            overlap, _ = cv2.intersectConvexConvex(polygon, expected)
+            union = cv2.contourArea(polygon) + cv2.contourArea(expected) - overlap
+            ious.append(overlap / union)
+        best = max(range(len(ious)), key=ious.__getitem__)
+        assert ious[best] >= 0.86
+        matches.append(best)
+    assert len(set(matches)) == 3
+    # The ladder marking at the lower right is not a row of parking bays.
+    assert all(
+        cv2.pointPolygonTest(polygon, (1343, 793), False) < 0 for polygon in polygons
+    )
+    for index, polygon in enumerate(polygons):
+        for other in polygons[index + 1 :]:
+            overlap, _ = cv2.intersectConvexConvex(polygon, other)
+            assert overlap <= 0.10 * min(
+                cv2.contourArea(polygon), cv2.contourArea(other)
+            )
 
 
 def test_actual_lsd_marks_a_short_occluded_separator_span() -> None:
