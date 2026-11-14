@@ -149,6 +149,9 @@ def propose_geometry(
                 "boundaries": [asdict(boundary) for boundary in candidate.boundaries],
                 "junction_ids": candidate.junction_ids,
                 "reason": candidate.reason,
+                "separator_ids": candidate.separator_ids,
+                "rail_id": candidate.rail_id,
+                "anchor_positions": candidate.anchor_positions,
             }
         )
 
@@ -185,6 +188,7 @@ def propose_geometry(
         "marking_pairs": [asdict(pair) for pair in result.pairs],
         "topology": asdict(result.topology),
         "topology_support": [asdict(item) for item in result.support],
+        "rows": [asdict(row) for row in result.rows],
         "candidates": records,
     }
     preview = render_initialization_preview(reference.image, result)

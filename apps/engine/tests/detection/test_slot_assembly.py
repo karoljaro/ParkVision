@@ -8,9 +8,11 @@ from parkvision.detection.marking_pair import MarkingPair
 from parkvision.detection.marking_topology import find_topology_candidates
 from parkvision.detection.segment_group import SegmentGroup
 from parkvision.detection.segment_merging import PixelPoint
-from parkvision.detection.slot_assembly import assemble_slots
+from parkvision.detection.slot_assembly import _select_nonoverlapping, assemble_slots
 from parkvision.detection.topology_support_measurement import measure_topology_support
 from parkvision.domain.geometry.point import Point
+from parkvision.domain.geometry.polygon import Polygon
+from parkvision.detection.slot_proposal import SlotProposal
 from parkvision.domain.types import CameraId
 
 
@@ -23,6 +25,7 @@ def _row(
     continuation: bool = False,
     hatching: bool = False,
     duplicate_hit: bool = False,
+    positions: tuple[float, ...] = (65.0, 125.0, 195.0, 275.0),
 ) -> tuple[SlotCandidate, ...]:
     """Separate exact geometric evidence from variability in OpenCV extraction."""
     pairs = []
@@ -51,7 +54,7 @@ def _row(
             groups[edge.segment_id] = SegmentGroup(fragments)
         pairs.append(MarkingPair((edges[0], edges[1]), axis, (4.0, 4.0), 1.0))
 
-    for index, x in enumerate((65.0, 125.0, 195.0, 275.0)[:separator_count]):
+    for index, x in enumerate(positions[:separator_count]):
         tip = shortened_tip if index == 1 else 190.0
         marking((x, 45.0), (x, tip), interruption if index == 1 else None)
     marking((35.0, 45.0), (310.0, 45.0), None)
@@ -163,3 +166,36 @@ def test_three_repeated_diagonal_strokes_veto_only_the_hatched_bay() -> None:
     candidates = _row(hatching=True)
     assert sum(item.proposal is not None for item in candidates) == 2
     assert any("hatched" in item.reason for item in candidates if item.proposal is None)
+
+
+def test_shared_short_tip_uses_the_narrower_neighbor_repair_budget() -> None:
+    candidates = _row(
+        rear=False, positions=(55.0, 95.0, 175.0, 255.0), shortened_tip=170
+    )
+    # The 20px repair is unsupported by the narrow 40px bay. It cannot be
+    # granted independently from the wider 80px bay on the opposite side.
+    for candidate in candidates:
+        if candidate.proposal is not None:
+            assert all(
+                abs(point.x * 379 - 95) > 1
+                for point in candidate.proposal.polygon.vertices
+            )
+    assert any(candidate.proposal is None for candidate in candidates)
+
+
+def test_contained_competing_geometry_is_retained_as_an_unresolved_conflict() -> None:
+    def candidate(lo: float, hi: float, nodes: tuple[int, ...]) -> SlotCandidate:
+        polygon = Polygon(
+            tuple(Point(x, y) for x, y in ((lo, lo), (hi, lo), (hi, hi), (lo, hi)))
+        )
+        return SlotCandidate(
+            "observed", SlotProposal(CameraId("camera"), polygon), (), nodes, "test"
+        )
+
+    selected = _select_nonoverlapping(
+        [candidate(0.3, 0.5, (1, 2, 3, 4)), candidate(0.1, 0.9, (1, 2))], 500, 500
+    )
+    assert sum(item.proposal is not None for item in selected) == 1
+    assert any(
+        item.status == "unresolved" and "conflict" in item.reason for item in selected
+    )

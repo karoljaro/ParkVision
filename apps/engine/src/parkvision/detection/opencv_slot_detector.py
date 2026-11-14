@@ -5,7 +5,7 @@ import numpy as np
 
 from ..capture.frame import Frame
 from ..domain.types import CameraId
-from .initialization import GeometryInitialization
+from .initialization import GeometryInitialization, RowEvidence
 from .line_segment import LineSegment
 from .marking_fragments import recover_marking_fragments
 from .marking_topology import find_topology_candidates
@@ -79,8 +79,16 @@ class OpenCVSlotDetector(SlotDetector):
             junction_radius_px=5 * scale,
             arm_length_px=18 * scale,
         )
+        rows: list[RowEvidence] = []
         candidates = assemble_slots(
-            CameraId(frame.camera_id), width, height, pairs, topology, support, sources
+            CameraId(frame.camera_id),
+            width,
+            height,
+            pairs,
+            topology,
+            support,
+            sources,
+            row_diagnostics=rows,
         )
         return GeometryInitialization(
             segments,
@@ -90,4 +98,5 @@ class OpenCVSlotDetector(SlotDetector):
             support,
             candidates,
             tuple(sources.items()),
+            tuple(rows),
         )

@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from ..domain.geometry.point import Point
 from ..domain.geometry.polygon import Polygon
 from ..domain.types import CameraId
-from .initialization import BoundaryEvidence, SlotCandidate
+from .initialization import BoundaryEvidence, RowEvidence, SlotCandidate
 from .line_segment import LineSegment
 from .marking_pair import MarkingPair
 from .segment_group import SegmentGroup
@@ -68,6 +68,8 @@ def assemble_slots(
     topology: TopologyCandidates,
     support: tuple[IntersectionSourceSupport, ...],
     source_groups: Mapping[int, SegmentGroup],
+    *,
+    row_diagnostics: list[RowEvidence] | None = None,
 ) -> tuple[SlotCandidate, ...]:
     """Use shared transverse anchors and adjacent separators to bound polygons.
 
@@ -84,8 +86,6 @@ def assemble_slots(
     proposed = []
     for key in sorted(rows):
         row = _distinct_anchors(rows[key], min(5.0, 0.4 * min_width))
-        if len({anchor.separator_id for anchor in row}) < 3:
-            continue
         gaps = [
             (
                 _distance(left.position, right.position)
@@ -94,6 +94,30 @@ def assemble_slots(
             )
             for left, right in zip(row, row[1:])
         ]
+        if row_diagnostics is not None:
+            reason = "Adjacent separator pairs checked by boundary assembly"
+            if len(row) < 3:
+                reason = (
+                    f"Only {len(row)} distinct supported separators; three required"
+                )
+            elif not any(gap is not None for gap in gaps):
+                reason = "No compatible adjacent direction, width and depth"
+            row_diagnostics.append(
+                RowEvidence(
+                    key[0],
+                    key[1],
+                    tuple(anchor.separator_id for anchor in row),
+                    tuple(anchor.node_id for anchor in row),
+                    tuple(anchor.position for anchor in row),
+                    tuple(gap is not None for gap in gaps),
+                    reason,
+                )
+            )
+        if len({anchor.separator_id for anchor in row}) < 3:
+            continue
+        # A shared separator receives one endpoint for both adjacent bays. The
+        # narrower spacing bounds repair even when neighboring widths differ.
+        row = _recover_row_tips(row, gaps, width, height)
         for index, gap in enumerate(gaps):
             if gap is None:
                 continue
@@ -136,6 +160,23 @@ def assemble_slots(
             reason = "No row with three adjacent supported separators"
         return (SlotCandidate("unresolved", None, (), (), reason),)
     return _select_nonoverlapping(proposed, width, height)
+
+
+def _recover_row_tips(
+    row: list[_Anchor],
+    gaps: list[float | None],
+    width: int,
+    height: int,
+) -> list[_Anchor]:
+    repaired = list(row)
+    for index in range(1, len(row) - 1):
+        left, right = gaps[index - 1 : index + 1]
+        if left is None or right is None:
+            continue
+        tip = _recover_tip(row, index, min(left, right), width, height)
+        if tip is not None:
+            repaired[index] = replace(row[index], tip=tip)
+    return repaired
 
 
 def _marking_evidence(
@@ -195,8 +236,16 @@ def _anchors(
     for node in topology.junctions:
         for index, hit in enumerate(node.intersections):
             measurement = measurements.get((node.candidate_id, index))
-            if measurement is None or not all(
-                _supported(line) for line in measurement.lines
+            if measurement is None:
+                continue
+            first_line, second_line = measurement.lines
+            first_evidence, second_evidence = (
+                evidence[line.line_id] for line in measurement.lines
+            )
+            sine = abs(_cross(first_evidence.direction, second_evidence.direction))
+            if not (
+                _supported(first_line, second_evidence.width_px / sine)
+                and _supported(second_line, first_evidence.width_px / sine)
             ):
                 continue
             for rail_id, separator_id in (hit.line_ids, hit.line_ids[::-1]):
@@ -227,9 +276,12 @@ def _anchors(
     return rows, by_separator
 
 
-def _supported(measurement: LineSourceSupport) -> bool:
+def _supported(measurement: LineSourceSupport, crossing_width_px: float = 0.0) -> bool:
     return any(
-        edge.nearest_fragment_gap_px <= edge.junction.window_px[1] + 2.0
+        edge.nearest_fragment_gap_px
+        <= max(
+            edge.junction.window_px[1] + 2.0, min(10.0, 0.5 * crossing_width_px + 2.0)
+        )
         and max(edge.before.coverage_ratio, edge.after.coverage_ratio) >= 0.34
         for edge in measurement.edges
     )
@@ -329,8 +381,7 @@ def _estimated_closure(
     noise_px: float,
 ) -> tuple[_Closure | None, str]:
     first, second = row[index : index + 2]
-    first_tip = _recover_tip(row, index, gap, width, height) or first.tip
-    second_tip = _recover_tip(row, index + 1, gap, width, height) or second.tip
+    first_tip, second_tip = first.tip, second.tip
     if not all(_interior(point, width, height) for point in (first_tip, second_tip)):
         return None, "Separator tip is clipped or too close to the image boundary"
     if any(_has_continuation(anchor, evidence) for anchor in (first, second)):
@@ -344,10 +395,12 @@ def _estimated_closure(
     direction = _direction(first_tip, second_tip)
     if _dot(evidence[first.rail_id].direction, direction) < _MIN_BACK_ALIGNMENT:
         return None, "Separator tips do not align with the row"
+    if _nearby_rear_rail(first, second, direction, evidence, noise_px):
+        return None, "Nearby transverse paint makes an unmarked rear closure ambiguous"
     tolerance = min(10.0, max(2 * noise_px, 0.12 * back_gap))
     for neighbor in _closure_neighbors(row, index, context, gap):
         other = row[neighbor]
-        other_tip = _recover_tip(row, neighbor, gap, width, height) or other.tip
+        other_tip = other.tip
         before = neighbor < index
         corner = first_tip if before else second_tip
         offset = _subtract(other_tip, corner)
@@ -373,6 +426,56 @@ def _estimated_closure(
                 "",
             )
     return None, "Rear boundary lacks a common rail or a corroborating separator tip"
+
+
+def _nearby_rear_rail(
+    first: _Anchor,
+    second: _Anchor,
+    rear_direction: PixelPoint,
+    evidence: Mapping[int, _MarkingEvidence],
+    noise_px: float,
+) -> bool:
+    """Withhold tip closure just before another observed transverse marking.
+
+    Hatching strokes can mimic a row of short bays inside a larger perimeter.
+    A nearby supported rear line makes their common apparent endpoint ambiguous.
+    """
+    excluded = {first.rail_id, first.separator_id, second.separator_id}
+    for line_id, marking in evidence.items():
+        if (
+            line_id in excluded
+            or marking.width_px == 0
+            or abs(_dot(rear_direction, marking.direction)) < _MIN_LOCAL_ALIGNMENT
+        ):
+            continue
+        supported = 0
+        for anchor in (first, second):
+            denominator = _cross(anchor.direction, marking.direction)
+            if abs(denominator) < 0.2:
+                break
+            extension = (
+                _cross(_subtract(marking.line.start, anchor.tip), marking.direction)
+                / denominator
+            )
+            # Compare the unpainted gap to the near edge of the stripe.
+            gap_to_paint = extension - 0.5 * marking.width_px / abs(denominator)
+            if (
+                not 2 * noise_px
+                < gap_to_paint
+                <= min(48.0, max(10.0, 0.32 * anchor.depth))
+            ):
+                break
+            position = _advance(anchor.tip, anchor.direction, extension)
+            distance = _dot(_subtract(position, marking.line.start), marking.direction)
+            if not any(
+                lo - noise_px <= distance <= hi + noise_px
+                for lo, hi in marking.intervals
+            ):
+                break
+            supported += 1
+        if supported == 2:
+            return True
+    return False
 
 
 def _closure_neighbors(
@@ -543,6 +646,9 @@ def _build_candidate(
         tuple(boundaries),
         tuple(sorted({first.node_id, second.node_id, *closure.node_ids})),
         reason,
+        (first.separator_id, second.separator_id),
+        first.rail_id,
+        (first.position, second.position),
     )
 
 
@@ -670,7 +776,14 @@ def _boundary_spans(
 
 def _unresolved(first: _Anchor, second: _Anchor, reason: str) -> SlotCandidate:
     return SlotCandidate(
-        "unresolved", None, (), tuple(sorted({first.node_id, second.node_id})), reason
+        "unresolved",
+        None,
+        (),
+        tuple(sorted({first.node_id, second.node_id})),
+        reason,
+        (first.separator_id, second.separator_id),
+        first.rail_id,
+        (first.position, second.position),
     )
 
 
@@ -681,6 +794,7 @@ def _select_nonoverlapping(
     selected: list[SlotCandidate] = []
     polygons: list[tuple[NDArray[np.float32], tuple[int, int, int, int], float]] = []
     unresolved: dict[tuple[int, ...], SlotCandidate] = {}
+    conflict_nodes = set()
     for candidate in sorted(
         candidates,
         key=lambda item: (
@@ -702,10 +816,11 @@ def _select_nonoverlapping(
         )
         bbox = cv2.boundingRect(pixels)
         area = float(cv2.contourArea(pixels))
-        conflict = _overlap_fraction(pixels, bbox, area, polygons)
-        if conflict >= 0.80:
+        conflict, duplicate = _overlap_fraction(pixels, bbox, area, polygons)
+        if duplicate:
             continue
         if conflict > 0.10:
+            conflict_nodes.add(candidate.junction_ids)
             unresolved.setdefault(
                 candidate.junction_ids,
                 replace(
@@ -724,7 +839,9 @@ def _select_nonoverlapping(
         for pair in _node_pairs(candidate.junction_ids)
     }
     return tuple(selected) + tuple(
-        item for ids, item in sorted(unresolved.items()) if ids not in covered_nodes
+        item
+        for ids, item in sorted(unresolved.items())
+        if ids not in covered_nodes or ids in conflict_nodes
     )
 
 
@@ -751,15 +868,18 @@ def _overlap_fraction(
     bbox: tuple[int, int, int, int],
     area: float,
     others: list[tuple[NDArray[np.float32], tuple[int, int, int, int], float]],
-) -> float:
+) -> tuple[float, bool]:
     x, y, width, height = bbox
     largest = 0.0
+    duplicate = False
     for other, (ox, oy, ow, oh), other_area in others:
         if x >= ox + ow or ox >= x + width or y >= oy + oh or oy >= y + height:
             continue
         shared, _ = cv2.intersectConvexConvex(pixels, other)
         largest = max(largest, float(shared) / min(area, other_area))
-    return largest
+        iou = float(shared) / (area + other_area - float(shared))
+        duplicate = duplicate or iou >= 0.80
+    return largest, duplicate
 
 
 def _interior(point: PixelPoint, width: int, height: int) -> bool:

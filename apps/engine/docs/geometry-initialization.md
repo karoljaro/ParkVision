@@ -1,5 +1,7 @@
 # Inicjalizacja geometrii parkingu v4.3
 
+Wyniki i ograniczenia Phase 3 są opisane w [raporcie geometrii](geometry-phase3.md).
+
 Detektor analizuje jeden obraz referencyjny. `OpenCVSlotDetector.detect(frame)`
 zwraca propozycje `SlotProposal`. `analyze(frame)` dodatkowo zachowuje źródłowe
 odcinki LSD, grupy, dopasowane krawędzie, osie oznakowania, węzły i ich wsparcie
@@ -24,12 +26,17 @@ xdg-open "$REVIEW/preview.png"
 labelme --nodata "$REVIEW/draft.json"
 ```
 
-`preview.png` zestawia oryginał, odcinki LSD z osiami i węzłami L/T/X oraz
-propozycje ROI. Linie ciągłe oznaczają fragmenty wsparte obserwacją, kreskowane
+`preview.png` zestawia w czterech panelach oryginał, odcinki LSD z osiami,
+węzły L/T/X z lokalnym sąsiedztwem oraz propozycje ROI.
+Linie ciągłe oznaczają fragmenty wsparte obserwacją, kreskowane
 oznaczają oszacowanie, a `?` wskazuje brak rozstrzygnięcia. Numery odpowiadają
 `candidate_id` w `evidence.json`. Dowody wskazują linie, ich źródłowe odcinki,
 węzły i powód decyzji. Pod podglądem jest lista powodów dla oznaczonych
 hipotez. Brak wsparcia na granicy podaje ID linii, długość luki i jej limit.
+Pole `rows` w dowodach zachowuje także sąsiedztwa, które miały za mało
+separatorów do złożenia miejsca. Liczba wierszy i hipotez `unresolved`
+opisuje pracę detektora, a liczba pominiętych fizycznych miejsc wymaga
+osobno zweryfikowanej geometrii odniesienia.
 Szkic odnosi się do hasha i orientacji obrazu. Jeśli
 metadane EXIF zmieniają wyświetlaną orientację, najpierw zapisz osobną
 referencję z ustaloną orientacją pikseli.

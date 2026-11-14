@@ -116,6 +116,25 @@ def _line_panel(
             cv2.circle(
                 image, _point(display(endpoint.position)), 3, _AXIS, 1, cv2.LINE_AA
             )
+
+
+def _topology_panel(
+    image: NDArray[np.uint8],
+    result: GeometryInitialization,
+    display: Callable[[PixelPoint], PixelPoint],
+) -> None:
+    for pair in result.pairs:
+        _line(
+            image, display(pair.centerline.start), display(pair.centerline.end), _RAW, 1
+        )
+    for row in result.rows:
+        if len(row.separator_ids) < 3:
+            continue
+        for start, end, compatible in zip(
+            row.positions, row.positions[1:], row.compatible_pairs
+        ):
+            color = _AXIS if compatible else _UNRESOLVED
+            _line(image, display(start), display(end), color, 2)
     used_nodes = {
         node_id for candidate in result.candidates for node_id in candidate.junction_ids
     }
@@ -155,7 +174,7 @@ def _roi_panel(
             color = _OBSERVED if candidate.status == "observed" else _ESTIMATED
             badge = f"{index} {'OBS' if candidate.status == 'observed' else 'EST'}"
         else:
-            pixels = tuple(
+            pixels = tuple(display(p) for p in candidate.anchor_positions) or tuple(
                 junction_positions[node_id]
                 for node_id in candidate.junction_ids
                 if node_id in junction_positions
@@ -216,26 +235,36 @@ def render_initialization_preview(
         )
     ]
     rejection_height = 38 + 22 * len(rejection_lines) if rejection_lines else 0
+    row_height = _HEADER + height
     preview = np.empty(
         (
-            _HEADER + height + _FOOTER + rejection_height,
-            3 * panel_width + 2 * _PANEL_GAP,
+            2 * row_height + _PANEL_GAP + _FOOTER + rejection_height,
+            2 * panel_width + _PANEL_GAP,
             3,
         ),
         dtype=np.uint8,
     )
     preview[:] = _BACKGROUND
     for index, title in enumerate(
-        ("REFERENCE", "LSD / SEPARATORS / L-T-X", "ROI DRAFT")
+        (
+            "REFERENCE",
+            "LSD / MARKING AXES",
+            "L-T-X / ROW ADJACENCY",
+            "ROI DRAFT",
+        )
     ):
-        offset = index * (panel_width + _PANEL_GAP)
-        _caption(preview, title, (offset + 13, 33), scale=0.77)
-        panel = preview[_HEADER : _HEADER + height, offset : offset + width]
+        offset = (index % 2) * (panel_width + _PANEL_GAP)
+        top = (index // 2) * (row_height + _PANEL_GAP)
+        _caption(preview, title, (offset + 13, top + 33), scale=0.77)
+        panel = preview[top + _HEADER : top + row_height, offset : offset + width]
         panel[:] = image
         if index == 1:
             _line_panel(panel, result, display)
         elif index == 2:
+            _topology_panel(panel, result, display)
+        elif index == 3:
             _roi_panel(panel, result, display)
+    footer = 2 * row_height + _PANEL_GAP
     labels = (
         ("LSD segments", _RAW),
         ("Paired axis / endpoint", _AXIS),
@@ -244,7 +273,7 @@ def render_initialization_preview(
         ("?: unresolved", _UNRESOLVED),
     )
     for index, (text, color) in enumerate(labels):
-        _caption(preview, text, (14 + index * 190, _HEADER + height + 27), color, 0.55)
+        _caption(preview, text, (14 + index * 190, footer + 27), color, 0.55)
     observed, estimated, unresolved = (
         sum(candidate.status == status for candidate in result.candidates)
         for status in ("observed", "estimated", "unresolved")
@@ -253,9 +282,9 @@ def render_initialization_preview(
         f"DRAFT | {observed} observed / {estimated} estimated / {unresolved} unresolved"
         " | numbered candidates refer to evidence.json"
     )
-    _caption(preview, summary, (14, _HEADER + height + 54), scale=0.59)
+    _caption(preview, summary, (14, footer + 54), scale=0.59)
     if rejection_lines:
-        start = _HEADER + height + _FOOTER
+        start = footer + _FOOTER
         _caption(preview, "UNRESOLVED CANDIDATES", (14, start + 20), _UNRESOLVED)
         for index, line in enumerate(rejection_lines, start=1):
             _caption(preview, line, (14, start + 20 + index * 22), scale=0.54)

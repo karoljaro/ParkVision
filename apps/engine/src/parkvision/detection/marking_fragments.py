@@ -161,7 +161,8 @@ def _stripe_center(profile: NDArray[np.float32], max_width: float) -> float | No
     # Background samples are -3 to -1.5 px. The peak is sought at +0.5 to +3 px.
     background = float(np.median(profile[:4]))
     peak = float(np.max(profile[7:13]))
-    if peak - background < 31:
+    contrast = peak - background
+    if contrast < 10:
         return None
     bright = profile >= (peak + background) / 2
     # Require a contiguous bright run through +1 px, bounded by two dark sides.
@@ -176,7 +177,30 @@ def _stripe_center(profile: NDArray[np.float32], max_width: float) -> float | No
     far = -3 + 0.5 * (stop - 0.5)
     if not (abs(near) <= 1.6 and 1.5 <= far - near <= max_width):
         return None
-    if stop + 2 >= len(profile) or float(np.min(profile[stop : stop + 3])) > peak - 25:
+    if stop + 2 >= len(profile):
+        return None
+    outside = profile[stop : stop + 3]
+    if contrast < 31:
+        # Faint paint must form a clean, two-sided stripe in its local lighting.
+        # A robust background noise estimate avoids promoting texture or a single
+        # illumination step merely because its absolute contrast is small.
+        if stop + 4 >= len(profile):
+            return None
+        # The first samples after the half-height crossing include the falling
+        # edge itself. Estimate surface noise one pixel farther outside paint.
+        background_tail = profile[stop + 2 : stop + 5]
+        noise = max(
+            1.0,
+            float(np.median(np.abs(np.diff(profile[:4])))),
+            float(np.median(np.abs(np.diff(background_tail)))),
+        )
+        far_background = float(np.median(background_tail))
+        if contrast < 6 * noise or abs(far_background - background) > max(
+            3.0, 0.25 * contrast
+        ):
+            return None
+    required_fall = 25.0 if contrast >= 31 else 0.75 * contrast
+    if float(np.min(outside)) > peak - required_fall:
         return None
     return (near + far) / 2
 

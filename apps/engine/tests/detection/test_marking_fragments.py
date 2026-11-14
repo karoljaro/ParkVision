@@ -1,8 +1,12 @@
+import numpy as np
 import pytest
 
 from parkvision.detection.line_fitting import fit_group_line
 from parkvision.detection.line_segment import LineSegment
-from parkvision.detection.marking_fragments import pair_marking_fragments
+from parkvision.detection.marking_fragments import (
+    _stripe_center,
+    pair_marking_fragments,
+)
 from parkvision.detection.segment_group import SegmentGroup
 
 
@@ -36,3 +40,24 @@ def test_marks_are_joined_only_across_a_local_gap(
     if expected_pairs == 1:
         assert pairs[0].centerline.length == pytest.approx(135.0)
         assert {len(group.segments) for group in final_sources.values()} == {2}
+
+
+def test_faint_two_sided_paint_is_measured_above_local_noise() -> None:
+    profile = np.full(32, 95, dtype=np.float32)
+    profile[7:20] = 118
+    assert _stripe_center(profile, 8) == pytest.approx(3.5)
+
+
+@pytest.mark.parametrize("kind", ["step", "noisy", "different-surfaces", "dark"])
+def test_weak_stripe_checks_reject_nonpaint_cross_sections(kind: str) -> None:
+    profile = np.full(32, 95, dtype=np.float32)
+    profile[7:20] = 118
+    if kind == "step":
+        profile[20:] = 118
+    elif kind == "noisy":
+        profile[:4] = (85, 105, 85, 105)
+    elif kind == "different-surfaces":
+        profile[20:] = 105
+    else:
+        profile[7:20] = 70
+    assert _stripe_center(profile, 8) is None

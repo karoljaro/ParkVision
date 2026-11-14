@@ -296,3 +296,56 @@ def test_actual_lsd_marks_a_short_occluded_separator_span() -> None:
     assert len(gaps) == 2
     assert gaps[0] == gaps[1]
     assert 9 < dist(gaps[0].start, gaps[0].end) < 18
+
+
+@pytest.mark.parametrize("lighting", ["faint", "shadow", "rotated"])
+def test_actual_lsd_handles_local_lighting_and_unequal_projected_widths(
+    geometry_uneven_row_image: NDArray[np.uint8], lighting: str
+) -> None:
+    image = geometry_uneven_row_image
+    minimum = 3
+    if lighting == "faint":
+        rng = np.random.default_rng(4303)
+        image = np.where(image > 100, 118, 95).astype(np.float32)
+        image += rng.normal(0, 0.8, image.shape[:2])[:, :, None]
+        image = np.clip(image, 0, 255).astype(np.uint8)
+        minimum = 2
+    elif lighting == "shadow":
+        image = np.where(image > 100, 160, 80).astype(np.uint8)
+        image[:, :230] = (image[:, :230].astype(float) * 0.32).astype(np.uint8)
+        minimum = 1
+    else:
+        image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    result = OpenCVSlotDetector().analyze(make_frame(image))
+    proposed = [candidate for candidate in result.candidates if candidate.proposal]
+    assert len(proposed) >= minimum
+    assert all(candidate.status in ("observed", "estimated") for candidate in proposed)
+    assert result.rows
+    assert all(
+        candidate.separator_ids and candidate.anchor_positions for candidate in proposed
+    )
+    for candidate in proposed:
+        assert candidate.proposal is not None
+        points = candidate.proposal.polygon.vertices
+        assert all(0 <= point.x <= 1 and 0 <= point.y <= 1 for point in points)
+
+
+def test_hatching_cannot_be_promoted_to_short_bays_inside_a_larger_perimeter(
+    geometry_uneven_row_image: NDArray[np.uint8],
+) -> None:
+    image = geometry_uneven_row_image
+    for y in (90, 121, 152):
+        cv2.line(image, (65, y), (140, y + 50), (230, 230, 230), 3)
+    result = OpenCVSlotDetector().analyze(make_frame(image))
+    proposed = [candidate for candidate in result.candidates if candidate.proposal]
+    assert len(proposed) == 2
+    assert all(
+        point.x * 519 > 150
+        for candidate in proposed
+        if candidate.proposal is not None
+        for point in candidate.proposal.polygon.vertices
+    )
+    assert any(
+        candidate.proposal is None and "ambiguous" in candidate.reason
+        for candidate in result.candidates
+    )

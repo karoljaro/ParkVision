@@ -29,6 +29,22 @@ class SlotCandidate:
     boundaries: tuple[BoundaryEvidence, ...]
     junction_ids: tuple[int, ...]
     reason: str
+    separator_ids: tuple[int, ...] = ()
+    rail_id: int | None = None
+    anchor_positions: tuple[PixelPoint, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RowEvidence:
+    """One local rail side, including rows too sparse to propose a physical bay."""
+
+    rail_id: int
+    side: int
+    separator_ids: tuple[int, ...]
+    junction_ids: tuple[int, ...]
+    positions: tuple[PixelPoint, ...]
+    compatible_pairs: tuple[bool, ...]
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,3 +58,4 @@ class GeometryInitialization:
     support: tuple[IntersectionSourceSupport, ...]
     candidates: tuple[SlotCandidate, ...]
     source_groups: tuple[tuple[int, SegmentGroup], ...] = ()
+    rows: tuple[RowEvidence, ...] = ()
