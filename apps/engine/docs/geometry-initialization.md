@@ -1,6 +1,8 @@
 # Inicjalizacja geometrii parkingu v4.3
 
 Wyniki i ograniczenia Phase 3 są opisane w [raporcie geometrii](geometry-phase3.md).
+Obsługa otwartych rzędów i częściowych hipotez jest opisana w
+[raporcie Phase 4A](geometry-phase4a.md).
 
 Detektor analizuje jeden obraz referencyjny. `OpenCVSlotDetector.detect(frame)`
 zwraca propozycje `SlotProposal`. `analyze(frame)` dodatkowo zachowuje źródłowe
@@ -26,8 +28,9 @@ xdg-open "$REVIEW/preview.png"
 labelme --nodata "$REVIEW/draft.json"
 ```
 
-`preview.png` zestawia w czterech panelach oryginał, odcinki LSD z osiami,
-węzły L/T/X z lokalnym sąsiedztwem oraz propozycje ROI.
+`preview.png` zestawia oryginał, odcinki LSD z osiami, węzły L/T/X i kotwice,
+strukturę rzędów oraz pełne i częściowe propozycje. Dodatkowy panel opisuje
+brakujące granice. Turkusowe odcinki i etykiety P pokazują częściowe dowody.
 Linie ciągłe oznaczają fragmenty wsparte obserwacją, kreskowane
 oznaczają oszacowanie, a `?` wskazuje brak rozstrzygnięcia. Numery odpowiadają
 `candidate_id` w `evidence.json`. Dowody wskazują linie, ich źródłowe odcinki,
@@ -47,6 +50,14 @@ referencję z ustaloną orientacją pikseli.
 | `estimated` | Co najmniej jeden fragment został uzupełniony w ograniczonym zakresie lub domknięty między zgodnymi końcami. |
 | `unresolved` | Detektor nie wygenerował wiarygodnego poligonu. Szczegóły pozostają w dowodach. |
 | `operator_verified` | Projekcja odczytana z jawnie zatwierdzonej konfiguracji. |
+
+Hipoteza częściowa zachowuje status `unresolved` i ma
+`geometry_kind: partial`, `polygon: null` oraz listę `missing_boundaries`.
+`summary` w dowodach i dodatkowy komunikat CLI podają osobno liczbę pełnych
+ROI, hipotez częściowych i otwartych struktur rzędów. `draft.json` zawiera
+pełne poligony. Operator może wykorzystać częściowe obserwacje z podglądu
+przy ręcznym ustalaniu fizycznych granic i dodawaniu brakujących miejsc.
+`boundary_context` w kotwicy oznacza linię o nieustalonym znaczeniu fizycznym.
 
 W LabelMe popraw wierzchołki, usuń niepoprawne propozycje i dodaj brakujące
 miejsca, jeśli masz wystarczające dowody. `label` jest trwałym ID fizycznego

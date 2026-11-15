@@ -152,6 +152,9 @@ def propose_geometry(
                 "separator_ids": candidate.separator_ids,
                 "rail_id": candidate.rail_id,
                 "anchor_positions": candidate.anchor_positions,
+                "geometry_kind": candidate.geometry_kind,
+                "missing_boundaries": candidate.missing_boundaries,
+                "row_id": candidate.row_id,
             }
         )
 
@@ -190,6 +193,20 @@ def propose_geometry(
         "topology_support": [asdict(item) for item in result.support],
         "rows": [asdict(row) for row in result.rows],
         "candidates": records,
+        "summary": {
+            "full_roi": len(shapes),
+            "partial_hypotheses": sum(
+                candidate.geometry_kind == "partial" for candidate in result.candidates
+            ),
+            "other_unresolved": sum(
+                candidate.status == "unresolved"
+                and candidate.geometry_kind != "partial"
+                for candidate in result.candidates
+            ),
+            "open_rows": sum(
+                row.geometry_kind in ("open_ended", "partial") for row in result.rows
+            ),
+        },
     }
     preview = render_initialization_preview(reference.image, result)
     _save_review(
@@ -284,6 +301,12 @@ def main() -> None:
             )
             print(
                 f"DRAFT: {found} proposed polygons, {unresolved} unresolved candidates"
+            )
+            evidence = json.loads((args.output_dir / "evidence.json").read_bytes())
+            summary = evidence["summary"]
+            print(
+                f"PARTIAL: {summary['partial_hypotheses']} marking hypotheses, "
+                f"{summary['open_rows']} open row structures"
             )
             print(f"Open in LabelMe with --nodata: {args.output_dir / 'draft.json'}")
         else:

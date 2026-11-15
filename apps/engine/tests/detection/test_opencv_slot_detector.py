@@ -349,3 +349,45 @@ def test_hatching_cannot_be_promoted_to_short_bays_inside_a_larger_perimeter(
         candidate.proposal is None and "ambiguous" in candidate.reason
         for candidate in result.candidates
     )
+
+
+def test_ufpr05_stepped_island_row_retains_source_backed_partial_geometry() -> None:
+    image = cv2.imread(
+        str(Path(__file__).resolve().parents[2] / "samples/01-pklot-ufpr05-empty.jpg")
+    )
+    result = OpenCVSlotDetector().analyze(make_frame(image))
+    # Visually checked marking ends on one side of the stepped island strip.
+    # These are development controls for row structure, without footprint GT.
+    expected = (
+        (644, 25),
+        (684, 52),
+        (722, 82),
+        (768, 116),
+        (816, 151),
+        (870, 194),
+        (934, 239),
+        (1005, 289),
+        (1084, 348),
+    )
+    rows = [row for row in result.rows if row.geometry_kind == "open_ended"]
+    matching = [
+        row
+        for row in rows
+        if sum(any(dist(point, p) < 12 for p in row.positions) for point in expected)
+        >= 7
+    ]
+    assert matching
+    partials = [
+        candidate
+        for candidate in result.candidates
+        if candidate.geometry_kind == "partial"
+        and candidate.row_id == matching[0].row_id
+    ]
+    assert len(partials) >= 6
+    assert all(
+        candidate.proposal is None
+        and candidate.status == "unresolved"
+        and candidate.boundaries
+        and candidate.missing_boundaries
+        for candidate in partials
+    )

@@ -23,6 +23,7 @@ _AXIS = (239, 202, 69)
 _OBSERVED = (117, 235, 93)
 _ESTIMATED = (46, 166, 255)
 _UNRESOLVED = (229, 132, 231)
+_PARTIAL = (235, 210, 75)
 
 
 def _point(xy: PixelPoint) -> tuple[int, int]:
@@ -127,14 +128,6 @@ def _topology_panel(
         _line(
             image, display(pair.centerline.start), display(pair.centerline.end), _RAW, 1
         )
-    for row in result.rows:
-        if len(row.separator_ids) < 3:
-            continue
-        for start, end, compatible in zip(
-            row.positions, row.positions[1:], row.compatible_pairs
-        ):
-            color = _AXIS if compatible else _UNRESOLVED
-            _line(image, display(start), display(end), color, 2)
     used_nodes = {
         node_id for candidate in result.candidates for node_id in candidate.junction_ids
     }
@@ -153,6 +146,33 @@ def _topology_panel(
             _badge(image, f"{hit.topology}{node.candidate_id}", position, color)
 
 
+def _row_panel(
+    image: NDArray[np.uint8],
+    result: GeometryInitialization,
+    display: Callable[[PixelPoint], PixelPoint],
+) -> None:
+    for row in result.rows:
+        if len(row.separator_ids) < 3 and row.geometry_kind == "shared_marking":
+            continue
+        color = _AXIS if row.geometry_kind == "shared_marking" else _PARTIAL
+        for start, end in zip(row.positions, row.positions[1:]):
+            _line(image, display(start), display(end), color, 2)
+        for index, position in enumerate(row.positions):
+            point = _point(display(position))
+            kind = row.anchor_kinds[index] if row.anchor_kinds else "paint_junction"
+            marker = (
+                cv2.MARKER_SQUARE if kind == "boundary_context" else cv2.MARKER_DIAMOND
+            )
+            cv2.drawMarker(image, point, color, marker, 8, 1, cv2.LINE_AA)
+        if row.positions:
+            position = tuple(
+                sum(p[axis] for p in row.positions) / len(row.positions)
+                for axis in (0, 1)
+            )
+            label = "RAIL" if row.geometry_kind == "shared_marking" else "OPEN"
+            _badge(image, f"R{row.row_id} {label}", display(position), color)
+
+
 def _roi_panel(
     image: NDArray[np.uint8],
     result: GeometryInitialization,
@@ -163,7 +183,15 @@ def _roi_panel(
         node.candidate_id: display(node.position) for node in result.topology.junctions
     }
     for index, candidate in enumerate(result.candidates, start=1):
-        if candidate.proposal is not None:
+        if candidate.geometry_kind == "partial":
+            pixels = tuple(display(p) for p in candidate.anchor_positions)
+            for boundary in candidate.boundaries:
+                _line(
+                    image, display(boundary.start), display(boundary.end), _PARTIAL, 2
+                )
+            color = _PARTIAL
+            badge = f"P{index}"
+        elif candidate.proposal is not None:
             pixels = tuple(
                 (point.x * (width - 1), point.y * (height - 1))
                 for point in candidate.proposal.polygon.vertices
@@ -191,7 +219,9 @@ def _roi_panel(
                 )
             color = _UNRESOLVED
             badge = f"{index} ?"
-        for boundary in candidate.boundaries:
+        for boundary in (
+            () if candidate.geometry_kind == "partial" else candidate.boundaries
+        ):
             start, end = display(boundary.start), display(boundary.end)
             if boundary.kind == "estimated":
                 _draw_dashes(image, start, end)
@@ -208,7 +238,7 @@ def render_initialization_preview(
 ) -> NDArray[np.uint8]:
     """Show each panel at the same display scale while preserving native evidence."""
     native_height, native_width = image.shape[:2]
-    scale = min(1.0, 1280 / native_width, 960 / native_height)
+    scale = min(1.0, 960 / native_width, 720 / native_height)
     width, height = max(2, round(native_width * scale)), max(
         2, round(native_height * scale)
     )
@@ -239,7 +269,7 @@ def render_initialization_preview(
     preview = np.empty(
         (
             2 * row_height + _PANEL_GAP + _FOOTER + rejection_height,
-            2 * panel_width + _PANEL_GAP,
+            3 * panel_width + 2 * _PANEL_GAP,
             3,
         ),
         dtype=np.uint8,
@@ -249,21 +279,41 @@ def render_initialization_preview(
         (
             "REFERENCE",
             "LSD / MARKING AXES",
-            "L-T-X / ROW ADJACENCY",
-            "ROI DRAFT",
+            "L-T-X / ANCHORS",
+            "ROW STRUCTURE",
+            "FULL ROI / PARTIAL EVIDENCE",
+            "MISSING BOUNDARIES",
         )
     ):
-        offset = (index % 2) * (panel_width + _PANEL_GAP)
-        top = (index // 2) * (row_height + _PANEL_GAP)
-        _caption(preview, title, (offset + 13, top + 33), scale=0.77)
+        offset = (index % 3) * (panel_width + _PANEL_GAP)
+        top = (index // 3) * (row_height + _PANEL_GAP)
+        _caption(preview, title, (offset + 13, top + 33), scale=0.65)
         panel = preview[top + _HEADER : top + row_height, offset : offset + width]
-        panel[:] = image
+        if index < 5:
+            panel[:] = image
         if index == 1:
             _line_panel(panel, result, display)
         elif index == 2:
             _topology_panel(panel, result, display)
         elif index == 3:
+            _row_panel(panel, result, display)
+        elif index == 4:
             _roi_panel(panel, result, display)
+        elif index == 5:
+            partials = [c for c in result.candidates if c.geometry_kind == "partial"]
+            missing = sorted({kind for c in partials for kind in c.missing_boundaries})
+            notes = [f"Partial marking hypotheses: {len(partials)}"]
+            notes.extend(f"- {kind.replace('_', ' ')}" for kind in missing)
+            notes += [
+                "Squares: unclassified boundary context",
+                "Diamonds: junction or aligned endpoint",
+                "Review the physical extent and boundary type.",
+            ]
+            y = 22
+            for note in notes:
+                for line in wrap(note, max(30, int(width / 9))):
+                    _caption(panel, line, (12, y), _PARTIAL, 0.50)
+                    y += 22
     footer = 2 * row_height + _PANEL_GAP
     labels = (
         ("LSD segments", _RAW),
@@ -271,16 +321,24 @@ def render_initialization_preview(
         ("Solid: observed", _OBSERVED),
         ("Dashed: estimated", _ESTIMATED),
         ("?: unresolved", _UNRESOLVED),
+        ("P: partial evidence", _PARTIAL),
     )
+    legend_step = (preview.shape[1] - 28) / len(labels)
     for index, (text, color) in enumerate(labels):
-        _caption(preview, text, (14 + index * 190, footer + 27), color, 0.55)
+        _caption(
+            preview, text, (14 + round(index * legend_step), footer + 27), color, 0.50
+        )
     observed, estimated, unresolved = (
-        sum(candidate.status == status for candidate in result.candidates)
+        sum(
+            candidate.status == status and candidate.geometry_kind != "partial"
+            for candidate in result.candidates
+        )
         for status in ("observed", "estimated", "unresolved")
     )
     summary = (
         f"DRAFT | {observed} observed / {estimated} estimated / {unresolved} unresolved"
-        " | numbered candidates refer to evidence.json"
+        f" / {sum(c.geometry_kind == 'partial' for c in result.candidates)} partial"
+        " | IDs refer to evidence.json"
     )
     _caption(preview, summary, (14, footer + 54), scale=0.59)
     if rejection_lines:

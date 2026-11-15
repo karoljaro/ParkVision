@@ -1,4 +1,5 @@
 from math import hypot
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -9,6 +10,7 @@ from .initialization import GeometryInitialization, RowEvidence
 from .line_segment import LineSegment
 from .marking_fragments import recover_marking_fragments
 from .marking_topology import find_topology_candidates
+from .row_reconstruction import reconstruct_open_rows
 from .slot_assembly import assemble_slots
 from .slot_detector import SlotDetector
 from .slot_proposal import SlotProposal
@@ -90,6 +92,25 @@ class OpenCVSlotDetector(SlotDetector):
             sources,
             row_diagnostics=rows,
         )
+        open_rows, partials = reconstruct_open_rows(
+            width, height, pairs, topology, support, sources, tuple(rows), candidates
+        )
+        if partials:
+            partial_keys = {frozenset(item.separator_ids) for item in partials}
+            candidates = (
+                tuple(
+                    item
+                    for item in candidates
+                    if item.proposal is not None
+                    or (
+                        item.separator_ids
+                        and frozenset(item.separator_ids) not in partial_keys
+                    )
+                )
+                + partials
+            )
+        rows = [replace(row, row_id=index) for index, row in enumerate(rows)]
+        rows.extend(open_rows)
         return GeometryInitialization(
             segments,
             fitted,

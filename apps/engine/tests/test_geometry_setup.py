@@ -181,3 +181,36 @@ def test_unresolved_proposal_does_not_create_a_labelme_shape(tmp_path: Path) -> 
     assert not draft["shapes"]
     assert [row["status"] for row in evidence["candidates"]] == ["unresolved"]
     assert evidence["candidates"][0]["polygon"] is None
+
+
+def test_partial_row_is_visible_in_evidence_and_cannot_approve_an_empty_draft(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "open T row.png"
+    image = np.full((340, 440, 3), 35, dtype=np.uint8)
+    for x, y in ((60, 50), (140, 64), (230, 80), (330, 96)):
+        cv2.line(image, (x, y), (x + 5, y + 155), (230, 230, 230), 5)
+        cv2.line(image, (x - 20, y), (x + 20, y), (230, 230, 230), 5)
+    assert cv2.imwrite(str(image_path), image)
+    output = tmp_path / "review"
+    _propose(image_path, output)
+    draft_path = output / "draft.json"
+    draft = json.loads(draft_path.read_bytes())
+    evidence = json.loads((output / "evidence.json").read_bytes())
+    assert draft["shapes"] == []
+    assert evidence["summary"]["full_roi"] == 0
+    assert evidence["summary"]["partial_hypotheses"] >= 2
+    partials = [c for c in evidence["candidates"] if c["geometry_kind"] == "partial"]
+    assert all(
+        c["polygon"] is None and c["slot_id"] is None and c["missing_boundaries"]
+        for c in partials
+    )
+    configuration = output / "approved.json"
+    approved = _approve(
+        image_path,
+        draft_path,
+        configuration,
+        sha256(draft_path.read_bytes()).hexdigest(),
+    )
+    assert approved.returncode == 2
+    assert not configuration.exists()
