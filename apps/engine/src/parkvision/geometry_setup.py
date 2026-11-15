@@ -18,6 +18,7 @@ from .capture.frame import Frame
 from .configuration import _integer, _string, load_configuration
 from .configuration_preview import render_configuration_preview
 from .detection.opencv_slot_detector import OpenCVSlotDetector
+from .detection.initialization import GeometryInitialization
 from .domain.geometry.polygon import Polygon
 from .domain.types import CameraId, ParkingId
 from .geometry_setup_preview import render_initialization_preview
@@ -103,6 +104,34 @@ def propose_geometry(
     revision: int = 1,
 ) -> tuple[int, int]:
     """Export an editable draft, diagnostic evidence, and a visual comparison."""
+    reference = _read_reference(image_path)
+    frame = Frame(camera_id, 0, datetime.now(UTC), reference.image)
+    result = OpenCVSlotDetector().analyze(frame)
+    return _export_geometry(
+        reference,
+        result,
+        output_dir,
+        parking_id=parking_id,
+        parking_name=parking_name,
+        camera_id=camera_id,
+        camera_name=camera_name,
+        revision=revision,
+    )
+
+
+def _export_geometry(
+    reference: _Reference,
+    result: GeometryInitialization,
+    output_dir: Path,
+    *,
+    parking_id: ParkingId,
+    parking_name: str,
+    camera_id: CameraId,
+    camera_name: str,
+    revision: int = 1,
+    multi_frame: dict | None = None,
+    extra_files: Mapping[str, bytes] | None = None,
+) -> tuple[int, int]:
     metadata = {
         "task": "parking-slot-setup",
         "parking_id": _string(parking_id, "parking_id"),
@@ -111,10 +140,7 @@ def propose_geometry(
         "camera_name": _string(camera_name, "camera_name"),
         "revision": _integer(revision, "revision", minimum=1),
     }
-    reference = _read_reference(image_path)
     metadata["image_sha256"] = reference.digest
-    frame = Frame(camera_id, 0, datetime.now(UTC), reference.image)
-    result = OpenCVSlotDetector().analyze(frame)
     relative_image = relpath(reference.path, output_dir.resolve())
     shapes: dict[str, dict[str, object]] = {}
     records = []
@@ -209,12 +235,15 @@ def propose_geometry(
         },
     }
     preview = render_initialization_preview(reference.image, result)
+    if multi_frame is not None:
+        evidence["multi_frame"] = multi_frame
     _save_review(
         output_dir,
         {
             "draft.json": draft,
             "evidence.json": _json_bytes(evidence),
             "preview.png": _png_bytes(preview),
+            **(extra_files or {}),
         },
     )
     return len(shapes), sum(
@@ -277,21 +306,36 @@ def main() -> None:
         "propose", help="Detect geometry and write a LabelMe draft"
     )
     verified = commands.add_parser("verified", help="Preview an approved configuration")
+    sequence = commands.add_parser(
+        "propose-sequence",
+        help="Fuse a declared same-camera sequence into a LabelMe draft",
+    )
     for command in (propose, verified):
         command.add_argument("--image", type=Path, required=True)
         command.add_argument("--output-dir", type=Path, required=True)
-    propose.add_argument("--parking-id", type=ParkingId, required=True)
-    propose.add_argument("--parking-name", required=True)
-    propose.add_argument("--camera-id", type=CameraId, required=True)
-    propose.add_argument("--camera-name", required=True)
-    propose.add_argument("--revision", type=int, default=1)
+    sequence.add_argument("--manifest", type=Path, required=True)
+    sequence.add_argument("--output-dir", type=Path, required=True)
+    for command in (propose, sequence):
+        command.add_argument("--parking-id", type=ParkingId, required=True)
+        command.add_argument("--parking-name", required=True)
+        command.add_argument("--camera-id", type=CameraId, required=True)
+        command.add_argument("--camera-name", required=True)
+        command.add_argument("--revision", type=int, default=1)
     verified.add_argument("--camera-id", type=CameraId)
     verified.add_argument("--configuration", type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.command == "propose":
-            found, unresolved = propose_geometry(
-                args.image,
+        if args.command in ("propose", "propose-sequence"):
+            if args.command == "propose-sequence":
+                from .geometry_sequence_setup import propose_sequence
+
+                propose_function = propose_sequence
+                input_path = args.manifest
+            else:
+                propose_function = propose_geometry
+                input_path = args.image
+            found, unresolved = propose_function(
+                input_path,
                 args.output_dir,
                 parking_id=args.parking_id,
                 parking_name=args.parking_name,

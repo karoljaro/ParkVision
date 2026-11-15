@@ -9,11 +9,13 @@ from ..domain.types import CameraId
 from .initialization import GeometryInitialization, RowEvidence
 from .line_segment import LineSegment
 from .marking_fragments import recover_marking_fragments
+from .marking_pair import MarkingPair
 from .marking_topology import find_topology_candidates
 from .row_reconstruction import reconstruct_open_rows
 from .slot_assembly import assemble_slots
 from .slot_detector import SlotDetector
 from .slot_proposal import SlotProposal
+from .segment_group import SegmentGroup
 from .topology_support_measurement import measure_topology_support
 
 
@@ -65,6 +67,19 @@ class OpenCVSlotDetector(SlotDetector):
         height, width = frame.image.shape[:2]
         scale = max(0.5, hypot(width, height) / 1440.0)
         fitted, sources, pairs = recover_marking_fragments(frame.image, segments, scale)
+        return self.assemble_evidence(frame, segments, fitted, sources, pairs)
+
+    def assemble_evidence(
+        self,
+        frame: Frame,
+        segments: tuple[LineSegment, ...],
+        fitted: tuple[LineSegment, ...],
+        sources: dict[int, SegmentGroup],
+        pairs: tuple[MarkingPair, ...],
+    ) -> GeometryInitialization:
+        """Use the same topology and assembly for single and fused observations."""
+        height, width = frame.image.shape[:2]
+        scale = max(0.5, hypot(width, height) / 1440.0)
         paired_ids = {edge.segment_id for pair in pairs for edge in pair.edges}
         topology = find_topology_candidates(
             pairs,

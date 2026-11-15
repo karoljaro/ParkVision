@@ -3,6 +3,10 @@
 Wyniki i ograniczenia Phase 3 są opisane w [raporcie geometrii](geometry-phase3.md).
 Obsługa otwartych rzędów i częściowych hipotez jest opisana w
 [raporcie Phase 4A](geometry-phase4a.md).
+Weryfikacja widoku kamery i łączenie obserwacji z wielu klatek są opisane w
+[raporcie Phase 4B](geometry-phase4b.md). Nowy podtryb `propose-sequence` używa
+manifestu z osobnymi identyfikatorami źródła/kamery każdej klatki oraz maską
+nieruchomego tła. Dotychczasowy podtryb `propose` pozostaje jednoklatkowy.
 
 Detektor analizuje jeden obraz referencyjny. `OpenCVSlotDetector.detect(frame)`
 zwraca propozycje `SlotProposal`. `analyze(frame)` dodatkowo zachowuje źródłowe
