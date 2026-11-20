@@ -181,6 +181,8 @@ def _export_geometry(
                 "geometry_kind": candidate.geometry_kind,
                 "missing_boundaries": candidate.missing_boundaries,
                 "row_id": candidate.row_id,
+                "rejection_code": candidate.rejection_code,
+                "rejection_line_ids": candidate.rejection_line_ids,
             }
         )
 
@@ -222,7 +224,14 @@ def _export_geometry(
         "summary": {
             "full_roi": len(shapes),
             "partial_hypotheses": sum(
-                candidate.geometry_kind == "partial" for candidate in result.candidates
+                candidate.geometry_kind == "partial"
+                and candidate.rejection_code is None
+                for candidate in result.candidates
+            ),
+            "rejected_partial_hypotheses": sum(
+                candidate.geometry_kind == "partial"
+                and candidate.rejection_code is not None
+                for candidate in result.candidates
             ),
             "other_unresolved": sum(
                 candidate.status == "unresolved"
@@ -230,7 +239,9 @@ def _export_geometry(
                 for candidate in result.candidates
             ),
             "open_rows": sum(
-                row.geometry_kind in ("open_ended", "partial") for row in result.rows
+                row.geometry_kind in ("open_ended", "partial")
+                and row.rejection_code is None
+                for row in result.rows
             ),
         },
     }
@@ -351,6 +362,10 @@ def main() -> None:
             print(
                 f"PARTIAL: {summary['partial_hypotheses']} marking hypotheses, "
                 f"{summary['open_rows']} open row structures"
+            )
+            print(
+                f"REJECTED: {summary['rejected_partial_hypotheses']} "
+                "non-parking partial hypotheses"
             )
             print(f"Open in LabelMe with --nodata: {args.output_dir / 'draft.json'}")
         else:

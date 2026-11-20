@@ -173,6 +173,17 @@ def propose_sequence(
     if len(manifest["frames"]) > 32:
         raise ValueError("Select at most 32 diagnostic frames per review")
     images, frames = [], []
+
+    def read_mask(value):
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("Registration mask paths must be strings")
+        selected = cv2.imread(str(manifest_path.parent / value), cv2.IMREAD_GRAYSCALE)
+        if selected is None:
+            raise ValueError("Cannot read stationary registration mask")
+        return selected
+
     for index, entry in enumerate(manifest["frames"]):
         if not isinstance(entry, dict) or any(
             not isinstance(entry.get(key), str) or not entry[key].strip()
@@ -181,23 +192,29 @@ def propose_sequence(
             raise ValueError("Each frame requires image, camera_id and source_id")
         reference = _read_reference(manifest_path.parent / entry["image"])
         images.append(reference)
+        points = entry.get("registration_points")
+        if "registration_points" in entry and not isinstance(points, (dict, str)):
+            raise ValueError("registration_points must be an object or JSON file path")
+        if isinstance(points, str):
+            points = json.loads((manifest_path.parent / points).read_bytes())
         frames.append(
             GeometryFrame(
                 Frame(entry["camera_id"], index, datetime.now(UTC), reference.image),
                 entry["source_id"],
                 f"{index}:{reference.path}",
                 reference.digest,
+                points,
+                read_mask(entry.get("background_mask")),
+                read_mask(entry.get("validation_mask")),
             )
         )
     if frames[0].frame.camera_id != camera_id:
         raise ValueError("Reference camera_id does not match requested camera")
-    mask = None
-    mask_path = manifest.get("background_mask")
-    if mask_path:
-        mask = cv2.imread(str(manifest_path.parent / mask_path), cv2.IMREAD_GRAYSCALE)
-        if mask is None:
-            raise ValueError("Cannot read stationary background mask")
-    result = analyze_frames(tuple(frames), background_mask=mask)
+    mask = read_mask(manifest.get("background_mask"))
+    check_mask = read_mask(manifest.get("validation_mask"))
+    result = analyze_frames(
+        tuple(frames), background_mask=mask, validation_mask=check_mask
+    )
     metadata = {
         "schema_version": 1,
         "manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(),
@@ -223,6 +240,7 @@ def propose_sequence(
         ids = set(candidate.separator_ids) | {
             i for b in candidate.boundaries for i in b.line_ids
         }
+        ids.update(candidate.rejection_line_ids)
         metadata.setdefault("candidate_sources", []).append(
             {
                 "candidate_id": candidate_id,
@@ -232,8 +250,21 @@ def propose_sequence(
                     if o.get("fusion_line_id") in ids
                 ),
                 "missing_boundaries": candidate.missing_boundaries,
+                "rejection_code": candidate.rejection_code,
             }
         )
+    from .registration_preview import render_registration_preview
+
+    extra_files = {
+        "sequence-preview.png": _png_bytes(_sequence_preview(images, result))
+    }
+    for index, record in enumerate(result.frames):
+        if "registration" in record:
+            extra_files[f"registration-{index:02d}.png"] = _png_bytes(
+                render_registration_preview(
+                    images[0].image, images[index].image, record["registration"]
+                )
+            )
     return _export_geometry(
         images[0],
         result.geometry,
@@ -244,7 +275,5 @@ def propose_sequence(
         camera_name=camera_name,
         revision=revision,
         multi_frame=metadata,
-        extra_files={
-            "sequence-preview.png": _png_bytes(_sequence_preview(images, result))
-        },
+        extra_files=extra_files,
     )

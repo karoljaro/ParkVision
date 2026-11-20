@@ -7,6 +7,10 @@ Weryfikacja widoku kamery i łączenie obserwacji z wielu klatek są opisane w
 [raporcie Phase 4B](geometry-phase4b.md). Nowy podtryb `propose-sequence` używa
 manifestu z osobnymi identyfikatorami źródła/kamery każdej klatki oraz maską
 nieruchomego tła. Dotychczasowy podtryb `propose` pozostaje jednoklatkowy.
+Rejestracja w pełnej rozdzielczości, odłożone punkty kontroli i opcjonalne
+punkty wskazane przez operatora są opisane w [raporcie Phase 4C](geometry-phase4c.md).
+Maski mogą zawierać świadomie ocenione trwałe oznaczenia nawierzchni.
+Nie oznacza to automatycznej akceptacji dopasowania ani zatwierdzenia geometrii.
 
 Detektor analizuje jeden obraz referencyjny. `OpenCVSlotDetector.detect(frame)`
 zwraca propozycje `SlotProposal`. `analyze(frame)` dodatkowo zachowuje źródłowe
@@ -62,6 +66,10 @@ ROI, hipotez częściowych i otwartych struktur rzędów. `draft.json` zawiera
 pełne poligony. Operator może wykorzystać częściowe obserwacje z podglądu
 przy ręcznym ustalaniu fizycznych granic i dodawaniu brakujących miejsc.
 `boundary_context` w kotwicy oznacza linię o nieustalonym znaczeniu fizycznym.
+Potwierdzony lokalny wzór nieparkingowy otrzymuje `rejection_code`, pozostaje
+w dowodach i jest oznaczony `R… REJECTED`. Nie wchodzi do liczby aktywnych hipotez.
+Brak tego kodu przy `unresolved` oznacza nierozstrzygnięcie, nie potwierdzenie miejsca.
+Szczegóły są w [domknięciu Phase 4C](geometry-phase4c-finalization.md).
 
 W LabelMe popraw wierzchołki, usuń niepoprawne propozycje i dodaj brakujące
 miejsca, jeśli masz wystarczające dowody. `label` jest trwałym ID fizycznego

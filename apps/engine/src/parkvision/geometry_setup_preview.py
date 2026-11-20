@@ -154,7 +154,11 @@ def _row_panel(
     for row in result.rows:
         if len(row.separator_ids) < 3 and row.geometry_kind == "shared_marking":
             continue
-        color = _AXIS if row.geometry_kind == "shared_marking" else _PARTIAL
+        color = (
+            _UNRESOLVED
+            if row.rejection_code
+            else (_AXIS if row.geometry_kind == "shared_marking" else _PARTIAL)
+        )
         for start, end in zip(row.positions, row.positions[1:]):
             _line(image, display(start), display(end), color, 2)
         for index, position in enumerate(row.positions):
@@ -169,7 +173,11 @@ def _row_panel(
                 sum(p[axis] for p in row.positions) / len(row.positions)
                 for axis in (0, 1)
             )
-            label = "RAIL" if row.geometry_kind == "shared_marking" else "OPEN"
+            label = (
+                "REJECTED"
+                if row.rejection_code
+                else ("RAIL" if row.geometry_kind == "shared_marking" else "OPEN")
+            )
             _badge(image, f"R{row.row_id} {label}", display(position), color)
 
 
@@ -183,7 +191,28 @@ def _roi_panel(
         node.candidate_id: display(node.position) for node in result.topology.junctions
     }
     for index, candidate in enumerate(result.candidates, start=1):
-        if candidate.geometry_kind == "partial":
+        if candidate.geometry_kind == "partial" and candidate.rejection_code:
+            pixels = tuple(display(p) for p in candidate.anchor_positions)
+            for boundary in candidate.boundaries:
+                _line(
+                    image,
+                    display(boundary.start),
+                    display(boundary.end),
+                    _UNRESOLVED,
+                    1,
+                )
+            for position in pixels:
+                cv2.drawMarker(
+                    image,
+                    _point(position),
+                    _UNRESOLVED,
+                    cv2.MARKER_TILTED_CROSS,
+                    14,
+                    2,
+                    cv2.LINE_AA,
+                )
+            color, badge = _UNRESOLVED, f"R{index} REJECTED"
+        elif candidate.geometry_kind == "partial":
             pixels = tuple(display(p) for p in candidate.anchor_positions)
             for boundary in candidate.boundaries:
                 _line(
@@ -238,6 +267,11 @@ def render_initialization_preview(
 ) -> NDArray[np.uint8]:
     """Show each panel at the same display scale while preserving native evidence."""
     native_height, native_width = image.shape[:2]
+    partial_count = sum(
+        c.geometry_kind == "partial" and c.rejection_code is None
+        for c in result.candidates
+    )
+    rejected_count = sum(c.rejection_code is not None for c in result.candidates)
     scale = min(1.0, 960 / native_width, 720 / native_height)
     width, height = max(2, round(native_width * scale)), max(
         2, round(native_height * scale)
@@ -300,9 +334,14 @@ def render_initialization_preview(
         elif index == 4:
             _roi_panel(panel, result, display)
         elif index == 5:
-            partials = [c for c in result.candidates if c.geometry_kind == "partial"]
+            partials = [
+                c
+                for c in result.candidates
+                if c.geometry_kind == "partial" and c.rejection_code is None
+            ]
             missing = sorted({kind for c in partials for kind in c.missing_boundaries})
             notes = [f"Partial marking hypotheses: {len(partials)}"]
+            notes.append(f"Rejected partials: {rejected_count}")
             notes.extend(f"- {kind.replace('_', ' ')}" for kind in missing)
             notes += [
                 "Squares: unclassified boundary context",
@@ -337,7 +376,7 @@ def render_initialization_preview(
     )
     summary = (
         f"DRAFT | {observed} observed / {estimated} estimated / {unresolved} unresolved"
-        f" / {sum(c.geometry_kind == 'partial' for c in result.candidates)} partial"
+        f" / {partial_count} partial / {rejected_count} rejected"
         " | IDs refer to evidence.json"
     )
     _caption(preview, summary, (14, footer + 54), scale=0.59)

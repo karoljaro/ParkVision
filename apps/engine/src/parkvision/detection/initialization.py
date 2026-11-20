@@ -35,6 +35,8 @@ class SlotCandidate:
     geometry_kind: Literal["complete", "partial"] = "complete"
     missing_boundaries: tuple[str, ...] = ()
     row_id: int | None = None
+    rejection_code: str | None = None
+    rejection_line_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,7 @@ class RowEvidence:
     separator_tips: tuple[PixelPoint, ...] = ()
     direction: PixelPoint | None = None
     row_id: int | None = None
+    rejection_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

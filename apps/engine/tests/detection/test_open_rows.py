@@ -100,6 +100,7 @@ def _assert_partial_only(candidates: tuple[SlotCandidate, ...]) -> None:
     assert all(candidate.status == "unresolved" for candidate in candidates)
     assert all(candidate.proposal is None for candidate in candidates)
     assert all(candidate.geometry_kind == "partial" for candidate in candidates)
+    assert all(candidate.rejection_code is None for candidate in candidates)
     assert all(candidate.missing_boundaries for candidate in candidates)
     assert all(candidate.boundaries for candidate in candidates)
 

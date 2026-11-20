@@ -180,7 +180,147 @@ def reconstruct_open_rows(
             ),
             reason=reason,
         )
+    # A partial path is not exempt from negative marking evidence merely because
+    # its physical depth is unknown. Retain rejected observations for review.
+    patterns = [
+        _hatched_perimeter(candidate, endpoints, topology, support, markings, scale)
+        for candidate in unique.values()
+    ]
+    for key, candidate in unique.items():
+        witness = next(
+            (
+                pattern
+                for pattern in patterns
+                if pattern and set(candidate.separator_ids) <= set(pattern[2:])
+            ),
+            (),
+        )
+        if witness and len(candidate.anchor_positions) == 2:
+            anchors = [
+                min(
+                    (p for p in endpoints if p.line.segment_id == line_id),
+                    key=lambda p: dist(p.position, position),
+                )
+                for line_id, position in zip(
+                    candidate.separator_ids, candidate.anchor_positions
+                )
+            ]
+            if any(set(p.contexts) - set(witness[:2]) for p in anchors):
+                witness = ()
+        if witness:
+            unique[key] = replace(
+                candidate,
+                rejection_code="non_parking_hatching",
+                rejection_line_ids=witness,
+                reason="Rejected non-parking hatching: repeated diagonal strokes "
+                "terminate on connected perimeter arms; "
+                "row anchors are not independent",
+            )
+    for index, row in enumerate(rows):
+        adjacent = [
+            unique.get(frozenset(pair))
+            for pair in zip(row.separator_ids, row.separator_ids[1:])
+        ]
+        compatible = tuple(
+            row.compatible_pairs[i] if item is None else item.rejection_code is None
+            for i, item in enumerate(adjacent)
+        )
+        if adjacent and all(
+            item is not None and item.rejection_code is not None for item in adjacent
+        ):
+            rows[index] = replace(
+                row,
+                compatible_pairs=compatible,
+                rejection_code="non_parking_hatching",
+                reason="Rejected hatched perimeter pattern; see candidate witnesses",
+            )
+        elif row.compatible_pairs != compatible:
+            rows[index] = replace(row, compatible_pairs=compatible)
     return tuple(rows), tuple(unique.values())
+
+
+def _hatched_perimeter(
+    candidate: SlotCandidate,
+    endpoints: list[_Endpoint],
+    topology: TopologyCandidates,
+    support: tuple[IntersectionSourceSupport, ...],
+    markings: Mapping[int, _MarkingEvidence],
+    scale: float,
+) -> tuple[int, ...]:
+    """Recognize a diagonal stroke family anchored around one observed corner.
+
+    Separate T caps or stepped islands are not a connected perimeter corner.
+    Parallelism alone is insufficient: both candidate anchors must belong to
+    different arms of a source-supported L, with repeated strokes into its wedge.
+    This uses the same finite-source support and distinct-stroke semantics as
+    slot assembly, without inventing a closing polygon for the partial bay.
+    """
+    if len(candidate.separator_ids) != 2:
+        return ()
+    selected = []
+    for line_id, position in zip(candidate.separator_ids, candidate.anchor_positions):
+        matching = [p for p in endpoints if p.line.segment_id == line_id]
+        if not matching:
+            return ()
+        selected.append(min(matching, key=lambda p: dist(p.position, position)))
+    if len(selected) != 2:
+        return ()
+    first, second = selected
+    measured = {(s.candidate_id, s.intersection_index): s for s in support}
+    for node in topology.junctions:
+        for index, hit in enumerate(node.intersections):
+            a, b = hit.line_ids
+            if any(set(p.contexts) - {a, b} for p in selected):
+                continue
+            if hit.topology != "L" or not (
+                (a in first.contexts and b in second.contexts)
+                or (b in first.contexts and a in second.contexts)
+            ):
+                continue
+            measurement = measured.get((node.candidate_id, index))
+            if measurement is None or not all(_supported(s) for s in measurement.lines):
+                continue
+            if min(dist(p.position, hit.position) for p in selected) < 4 * scale:
+                continue
+            rays = [_unit(hit.position, p.position) for p in selected]
+            turn = _cross(*rays)
+            if abs(turn) < 0.4:
+                continue
+            family = {}
+            for endpoint in endpoints:
+                if not set(endpoint.contexts) & {a, b}:
+                    continue
+                if _dot(endpoint.direction, first.direction) < _LOCAL_ALIGNMENT:
+                    continue
+                # Source-supported strokes must point inside the same wedge.
+                if (
+                    _cross(rays[0], endpoint.direction) * turn <= 0
+                    or _cross(endpoint.direction, rays[1]) * turn <= 0
+                ):
+                    continue
+                evidence = markings[endpoint.line.segment_id]
+                if sum(hi - lo for lo, hi in evidence.intervals) < max(
+                    24 * scale, 0.25 * min(first.line.length, second.line.length)
+                ):
+                    continue
+                family[endpoint.line.segment_id] = endpoint
+            if not set(candidate.separator_ids) <= family.keys():
+                continue
+            offsets = sorted(
+                (_cross(p.position, first.direction), line_id)
+                for line_id, p in family.items()
+            )
+            distinct = []
+            margin = max(3 * scale, 2 * max(first.width, second.width))
+            for offset, line_id in offsets:
+                if not distinct or offset - distinct[-1][0] > margin:
+                    distinct.append((offset, line_id))
+            gaps = [q[0] - p[0] for p, q in zip(distinct, distinct[1:])]
+            if len(distinct) >= 3 and any(
+                max(x, y) <= 2.5 * min(x, y) for x, y in zip(gaps, gaps[1:])
+            ):
+                return (a, b, *(i for _, i in distinct))
+    return ()
 
 
 def _endpoints(

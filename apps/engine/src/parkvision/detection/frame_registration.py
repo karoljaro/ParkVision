@@ -1,6 +1,7 @@
-"""Bounded registration on explicitly selected, stationary background only."""
+"""Bounded similarity registration with native refinement and withheld checks."""
 
 from dataclasses import dataclass
+from hashlib import sha256
 from math import atan2, degrees, hypot
 
 import cv2
@@ -19,43 +20,324 @@ class Registration:
     residual_px: float | None = None
     coverage: float = 0.0
     occupied_cells: int = 0
+    method: str = "orb_native_holdout"
+    residual_p50_px: float | None = None
+    residual_max_px: float | None = None
+    validation_p50_px: float | None = None
+    validation_p90_px: float | None = None
+    validation_max_px: float | None = None
+    validation_count: int = 0
+    validation_coverage: float = 0.0
+    validation_cells: int = 0
+    parameter_stability_px: float | None = None
+    correspondences: tuple[dict, ...] = ()
+    failure_reasons: tuple[str, ...] = ()
+    raw_matches: int = 0
+    refined_matches: int = 0
+    provenance: str = (
+        "automatic_spatial_holdout_same_features_not_independent_ground_truth"
+    )
+    appearance_min_ncc: float | None = None
+    validation_groups: tuple[dict, ...] = ()
 
 
 IDENTITY = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
 
 
-def register_background(
-    reference: NDArray[np.uint8],
-    image: NDArray[np.uint8],
-    background_mask: NDArray[np.uint8] | None,
-) -> Registration:
-    """Reject uncertain, zoomed or moved views; never estimate a homography.
+def _coverage(points, width, height):
+    hull = cv2.convexHull(np.float32(points)) if len(points) >= 3 else None
+    area = cv2.contourArea(hull) / (width * height) if hull is not None else 0.0
+    cells = {
+        (min(3, int(x * 4 / width)), min(2, int(y * 3 / height))) for x, y in points
+    }
+    return float(area), len(cells)
 
-    The mask must select stationary scenery in the reference AND source views,
-    excluding parking surfaces, vehicles and vegetation. Broadly distributed
-    inliers are required even when a mask is supplied. This is an explicit
-    operator assertion, not automatic semantic recognition of the background.
-    """
-    if reference.shape != image.shape:
-        return Registration(False, "resolution_mismatch")
-    if background_mask is None:
-        return Registration(False, "stationary_background_mask_required")
+
+def _similarity(source, target):
+    """Least squares on ALL supplied pairs, without rejecting manual outliers."""
+    center = source.mean(axis=0)
+    target_center = target.mean(axis=0)
+    a, b = source - center, target - target_center
+    denominator = float(np.sum(a * a))
+    if denominator < 1e-9:
+        raise ValueError("Degenerate control points")
+    real = float(np.sum(a * b)) / denominator
+    imag = float(np.sum(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])) / denominator
+    rotation = np.array([[real, -imag], [imag, real]])
+    return np.column_stack((rotation, target_center - rotation @ center))
+
+
+def _errors(matrix, source, target):
+    return np.linalg.norm(source @ matrix[:, :2].T + matrix[:, 2] - target, axis=1)
+
+
+def _patch_score(reference, image, source, target, size=15):
+    height, width = reference.shape
+    margin = size // 2 + 1
+    if not all(
+        margin <= p[0] < width - margin and margin <= p[1] < height - margin
+        for p in (source, target)
+    ):
+        return -1.0
+    first = cv2.getRectSubPix(
+        reference, (size, size), tuple(float(v) for v in target)
+    ).astype(float)
+    second = cv2.getRectSubPix(
+        image, (size, size), tuple(float(v) for v in source)
+    ).astype(float)
+    if min(first.std(), second.std()) < 3:
+        return -1.0
+    first -= first.mean()
+    second -= second.mean()
+    return float(
+        np.sum(first * second) / (np.linalg.norm(first) * np.linalg.norm(second))
+    )
+
+
+def _evaluate(
+    source,
+    target,
+    is_check,
+    matrix,
+    good,
+    shape,
+    *,
+    method,
+    raw_matches,
+    provenance,
+    ids=(),
+    patch_scores=None,
+    check_groups=None,
+):
+    height, width = shape[:2]
+    errors = _errors(matrix, source, target)
+    fit = ~is_check
+    supported = fit & good
+    fit_errors = errors[supported]
+    check_errors = errors[is_check]
+    count = int(supported.sum())
+    matches = int(fit.sum())
+    coverage, cells = _coverage(target[supported], width, height)
+    check_coverage, check_cells = _coverage(target[is_check], width, height)
+    p50, p90, maximum = (
+        tuple(float(x) for x in np.quantile(fit_errors, [0.5, 0.9, 1]))
+        if count
+        else (None, None, None)
+    )
+    c50, c90, cmax = (
+        tuple(float(x) for x in np.quantile(check_errors, [0.5, 0.9, 1]))
+        if len(check_errors)
+        else (None, None, None)
+    )
+    corners = np.float64(
+        [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]]
+    )
+    stability = 0.0
+    # Leave one spatial cell out of the FIT set only. Validation never refits it.
+    fit_cells = np.minimum(np.int32(target[:, 0] * 4 / width), 3) + 4 * np.minimum(
+        np.int32(target[:, 1] * 3 / height), 2
+    )
+    for cell in set(fit_cells[supported]):
+        subset = supported & (fit_cells != cell)
+        if subset.sum() < 4:
+            stability = float("inf")
+            break
+        alternative = _similarity(source[subset], target[subset])
+        stability = max(
+            stability,
+            float(
+                np.max(
+                    np.linalg.norm(
+                        corners @ (alternative[:, :2] - matrix[:, :2]).T
+                        + alternative[:, 2]
+                        - matrix[:, 2],
+                        axis=1,
+                    )
+                )
+            ),
+        )
+    failures = []
+    if patch_scores is not None and min(patch_scores, default=-1) < 0.85:
+        failures.append("control_point_appearance_mismatch")
+    minimum = 6 if method == "control_points" else 25
+    if count < minimum or count / max(1, matches) < 0.60 or p90 is None or p90 > 1.5:
+        failures.append("unreliable_background_fit")
+    if method == "control_points" and (maximum is None or maximum > 3):
+        failures.append("inconsistent_control_points")
+    if coverage < 0.15 or cells < 6:
+        failures.append("insufficient_spatial_coverage")
+    check_minimum = 6 if method == "control_points" else 12
+    if len(check_errors) < check_minimum or check_coverage < 0.15 or check_cells < 6:
+        failures.append("insufficient_validation_coverage")
+    if c90 is None or c90 > 1.5 or cmax is None or cmax > 3:
+        failures.append("held_out_alignment_failed")
+    groups = []
+    if check_groups is not None:
+        for name in sorted(set(check_groups[is_check])):
+            selected = is_check & (check_groups == name)
+            values = errors[selected]
+            area, occupied = _coverage(target[selected], width, height)
+            groups.append(
+                {
+                    "group": name,
+                    "count": int(selected.sum()),
+                    "p50_px": float(np.median(values)),
+                    "p90_px": float(np.quantile(values, 0.9)),
+                    "max_px": float(values.max()),
+                    "coverage": area,
+                    "cells": occupied,
+                }
+            )
+            if name == "additional_mask" and selected.sum() < 6:
+                failures.append("insufficient_additional_validation")
+            if name == "spatial_holdout" and (
+                selected.sum() < 12 or area < 0.15 or occupied < 6
+            ):
+                failures.append("insufficient_validation_coverage")
+            if float(np.quantile(values, 0.9)) > 1.5 or float(values.max()) > 3:
+                failures.append("held_out_alignment_failed")
+    if not np.isfinite(stability) or stability > 1.5:
+        failures.append("unstable_transform")
+    scale = hypot(matrix[0, 0], matrix[1, 0])
+    angle = abs(degrees(atan2(matrix[1, 0], matrix[0, 0])))
+    shift = hypot(matrix[0, 2], matrix[1, 2])
+    if (
+        abs(scale - 1) > 0.005
+        or angle > 0.75
+        or shift > max(8, 0.012 * hypot(width, height))
+    ):
+        failures.append("camera_view_changed")
+    records = tuple(
+        {
+            "id": str(ids[i]) if ids else str(i),
+            "source": tuple(float(v) for v in a),
+            "reference": tuple(float(v) for v in b),
+            "role": "check" if is_check[i] else "fit",
+            "error_px": float(errors[i]),
+            "inlier": bool(good[i]),
+            "group": (
+                str(check_groups[i]) if check_groups is not None else "control_points"
+            ),
+        }
+        for i, (a, b) in enumerate(zip(source, target, strict=True))
+    )
+    return Registration(
+        accepted=not failures,
+        reason=failures[0] if failures else "background_aligned",
+        matrix=tuple(tuple(float(v) for v in row) for row in matrix),
+        matches=matches,
+        inliers=count,
+        inlier_ratio=count / max(1, matches),
+        residual_px=p90,
+        coverage=coverage,
+        occupied_cells=cells,
+        method=method,
+        residual_p50_px=p50,
+        residual_max_px=maximum,
+        validation_p50_px=c50,
+        validation_p90_px=c90,
+        validation_max_px=cmax,
+        validation_count=len(check_errors),
+        validation_coverage=check_coverage,
+        validation_cells=check_cells,
+        parameter_stability_px=stability if np.isfinite(stability) else None,
+        correspondences=records,
+        failure_reasons=tuple(failures),
+        raw_matches=raw_matches,
+        refined_matches=len(source),
+        provenance=provenance,
+        appearance_min_ncc=min(patch_scores) if patch_scores is not None else None,
+        validation_groups=tuple(groups),
+    )
+
+
+def _control_registration(reference, image, controls):
+    if (
+        not isinstance(controls, dict)
+        or not isinstance(controls.get("provenance"), str)
+        or not controls["provenance"].strip()
+    ):
+        raise ValueError("Control points require nonempty provenance")
+    for key, pixels in [
+        ("reference_pixel_sha256", reference),
+        ("source_pixel_sha256", image),
+    ]:
+        if controls.get(key) != sha256(pixels.tobytes()).hexdigest():
+            raise ValueError("Control point pixel hash mismatch")
     height, width = reference.shape[:2]
-    if background_mask.shape != (height, width) or background_mask.dtype != np.uint8:
-        raise ValueError("Background mask must be uint8 with reference dimensions")
-    # A bounded downscale limits cost; all reported errors remain full-size pixels.
+    source, target, roles, ids = [], [], [], []
+    for role in ("fit", "check"):
+        entries = controls.get(role)
+        if not isinstance(entries, list) or len(entries) < 6:
+            raise ValueError("At least six fit and six check points are required")
+        for entry in entries:
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("id"), str)
+                or not entry["id"].strip()
+            ):
+                raise ValueError("Control point IDs must be nonempty strings")
+            ids.append(entry["id"])
+            for key, collection in [("source", source), ("reference", target)]:
+                point = np.asarray(entry.get(key), dtype=np.float64)
+                if (
+                    point.shape != (2,)
+                    or not np.isfinite(point).all()
+                    or not (0 <= point[0] < width and 0 <= point[1] < height)
+                ):
+                    raise ValueError(
+                        "Control coordinates must be finite, in-frame pixel centers"
+                    )
+                collection.append(point)
+            roles.append(role == "check")
+    if len(ids) != len(set(ids)):
+        raise ValueError("Control point IDs must be unique")
+    source, target, is_check = np.array(source), np.array(target), np.array(roles)
+    for points in (source, target):
+        distances = np.linalg.norm(points[:, None] - points[None, :], axis=2)
+        np.fill_diagonal(distances, float("inf"))
+        if np.min(distances) < 12:
+            raise ValueError("Use distinct controls separated by at least 12 pixels")
+        for selected in (is_check, ~is_check):
+            area, cells = _coverage(points[selected], width, height)
+            if area < 0.15 or cells < 6:
+                raise ValueError("Control points have insufficient spatial coverage")
+    matrix = _similarity(source[~is_check], target[~is_check])
+    gray = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
+    src_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    patch_scores = [
+        _patch_score(gray, src_gray, a, b) for a, b in zip(source, target, strict=True)
+    ]
+    return _evaluate(
+        source,
+        target,
+        is_check,
+        matrix,
+        np.ones(len(source), bool),
+        reference.shape,
+        method="control_points",
+        raw_matches=len(source),
+        provenance=controls["provenance"],
+        ids=ids,
+        patch_scores=patch_scores,
+    )
+
+
+def _orb_matches(reference, image, mask):
+    height, width = reference.shape
     ratio = min(1.0, 1200 / max(height, width))
     size = (round(width * ratio), round(height * ratio))
-    ref = cv2.resize(cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY), size)
-    src = cv2.resize(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), size)
-    mask = cv2.resize(background_mask, size, interpolation=cv2.INTER_NEAREST)
-    orb = cv2.ORB_create(nfeatures=4500, fastThreshold=12)
-    rk, rd = orb.detectAndCompute(ref, mask)
-    sk, sd = orb.detectAndCompute(src, mask)
-    if rd is None or sd is None or len(rd) < 25 or len(sd) < 25:
-        return Registration(False, "insufficient_background_features")
+    ref, src = cv2.resize(reference, size), cv2.resize(image, size)
+    selected = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
+    # A 31-pixel exclusion at reduced resolution discarded real static fence
+    # corners. Use the descriptor's half-width; native patch/FB checks still
+    # reject unsupported border matches before fitting.
+    orb = cv2.ORB_create(nfeatures=4500, fastThreshold=12, edgeThreshold=15)
+    rk, rd = orb.detectAndCompute(ref, selected)
+    sk, sd = orb.detectAndCompute(src, selected)
+    if rd is None or sd is None or len(rd) < 2 or len(sd) < 2:
+        return np.empty((0, 2)), np.empty((0, 2)), 0.0
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-    forward = matcher.knnMatch(sd, rd, k=2)
     backward = matcher.knnMatch(rd, sd, k=2)
     reverse = {
         a.queryIdx: a.trainIdx
@@ -64,6 +346,7 @@ def register_background(
         for a, b in [entry]
         if a.distance < 0.75 * b.distance
     }
+    forward = matcher.knnMatch(sd, rd, k=2)
     matches = [
         a
         for entry in forward
@@ -71,13 +354,204 @@ def register_background(
         for a, b in [entry]
         if a.distance < 0.75 * b.distance and reverse.get(a.trainIdx) == a.queryIdx
     ]
-    if len(matches) < 25:
-        return Registration(False, "insufficient_mutual_matches", matches=len(matches))
-    source = np.float32([sk[m.queryIdx].pt for m in matches]) / ratio
-    target = np.float32([rk[m.trainIdx].pt for m in matches]) / ratio
-    matrix, selected = cv2.estimateAffinePartial2D(
-        source,
+    # OpenCV resize maps pixel centers. Do not magnify its half-pixel offset.
+    factor = np.array([width / size[0], height / size[1]])
+    target = (
+        np.float64([rk[m.trainIdx].pt for m in matches]).reshape(-1, 2) + 0.5
+    ) * factor - 0.5
+    source = (
+        np.float64([sk[m.queryIdx].pt for m in matches]).reshape(-1, 2) + 0.5
+    ) * factor - 0.5
+    return source, target, ratio
+
+
+def _refine(reference, image, source, target, ratio):
+    if not len(source):
+        return source, target
+    original = source.copy()
+    target = np.float32(target).reshape(-1, 1, 2)
+    # Refine the reference corner, then track its same local appearance natively.
+    cv2.cornerSubPix(
+        reference,
         target,
+        (3, 3),
+        (-1, -1),
+        (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+    )
+    source, status, _ = cv2.calcOpticalFlowPyrLK(
+        reference,
+        image,
+        target,
+        np.float32(source).reshape(-1, 1, 2),
+        winSize=(21, 21),
+        maxLevel=3,
+        flags=cv2.OPTFLOW_USE_INITIAL_FLOW,
+    )
+    back, reverse, _ = cv2.calcOpticalFlowPyrLK(
+        image,
+        reference,
+        source,
+        target.copy(),
+        winSize=(21, 21),
+        maxLevel=3,
+        flags=cv2.OPTFLOW_USE_INITIAL_FLOW,
+    )
+    source, target = source.reshape(-1, 2), target.reshape(-1, 2)
+    good = status.ravel().astype(bool) & reverse.ravel().astype(bool)
+    good &= np.linalg.norm(back.reshape(-1, 2) - target, axis=1) <= 0.75
+    good &= np.linalg.norm(source - original, axis=1) <= max(4, 4 / ratio)
+    height, width = reference.shape
+    indices = []
+    for i in np.flatnonzero(good):
+        a, b = source[i], target[i]
+        if not all(6 <= p[0] < width - 6 and 6 <= p[1] < height - 6 for p in (a, b)):
+            continue
+        first = cv2.getRectSubPix(reference, (11, 11), tuple(b)).astype(float)
+        second = cv2.getRectSubPix(image, (11, 11), tuple(a)).astype(float)
+        first -= first.mean()
+        second -= second.mean()
+        norm = np.linalg.norm(first) * np.linalg.norm(second)
+        if norm > 1 and float(np.sum(first * second)) / norm >= 0.85:
+            indices.append(i)
+    return source[indices].astype(float), target[indices].astype(float)
+
+
+def _distinct_points(source, target, minimum=12.0):
+    """ORB scale levels must not put the same physical corner in fit and check."""
+    selected = []
+    grids = ({}, {})
+    for index in range(len(source)):
+        keys = [
+            tuple(int(v // minimum) for v in point)
+            for point in (source[index], target[index])
+        ]
+        nearby = False
+        for points, grid, key in zip((source, target), grids, keys, strict=True):
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if any(
+                        np.linalg.norm(points[index] - points[other]) < minimum
+                        for other in grid.get((key[0] + dx, key[1] + dy), ())
+                    ):
+                        nearby = True
+        if nearby:
+            continue
+        selected.append(index)
+        for grid, key in zip(grids, keys, strict=True):
+            grid.setdefault(key, []).append(index)
+    return source[selected], target[selected]
+
+
+def register_background(
+    reference: NDArray[np.uint8],
+    image: NDArray[np.uint8],
+    background_mask: NDArray[np.uint8] | None,
+    *,
+    validation_mask: NDArray[np.uint8] | None = None,
+    control_points: dict | None = None,
+) -> Registration:
+    """Fit a bounded similarity and check unused, distributed static points.
+
+    Masks may include deliberately reviewed permanent pavement markings/curbs,
+    never unconditionally the parking surface. Automatic holdout uses the same
+    feature method and is explicitly NOT independent ground truth. Supplied
+    controls are optional and never bypass validation or camera-motion limits.
+    """
+    if reference.shape != image.shape:
+        return Registration(False, "resolution_mismatch")
+    if control_points is not None:
+        try:
+            return _control_registration(reference, image, control_points)
+        except (ValueError, TypeError, KeyError) as error:
+            return Registration(
+                False,
+                "invalid_control_points",
+                method="control_points",
+                failure_reasons=(str(error),),
+            )
+    if background_mask is None:
+        return Registration(False, "stationary_background_mask_required")
+    height, width = reference.shape[:2]
+    for mask in (background_mask, validation_mask):
+        if mask is not None and (
+            mask.shape != (height, width) or mask.dtype != np.uint8
+        ):
+            raise ValueError("Background mask must be uint8 with reference dimensions")
+    if validation_mask is not None and np.any(
+        (background_mask > 0) & (validation_mask > 0)
+    ):
+        raise ValueError("Fit and validation masks must be disjoint")
+    gray = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
+    src_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    source, target, ratio = _orb_matches(gray, src_gray, background_mask)
+    raw = len(source)
+    if raw < 25:
+        return Registration(
+            False,
+            (
+                "insufficient_background_features"
+                if ratio == 0
+                else "insufficient_mutual_matches"
+            ),
+            matches=raw,
+            raw_matches=raw,
+        )
+    source, target = _refine(gray, src_gray, source, target, ratio)
+    source, target = _distinct_points(source, target)
+    # Always withhold spatially interleaved points, even with extra check regions.
+    # Extra regions ADD checks; they never replace or weaken the global holdout.
+    ordered = sorted(
+        range(len(target)),
+        key=lambda i: (
+            int(target[i, 1] * 3 / height),
+            int(target[i, 0] * 4 / width),
+            target[i, 1],
+            target[i, 0],
+        ),
+    )
+    check = np.zeros(len(source), bool)
+    cell_counts = {}
+    for index in ordered:
+        cell = (int(target[index, 0] * 4 / width), int(target[index, 1] * 3 / height))
+        count = cell_counts.get(cell, 0)
+        check[index] = count % 3 == 0
+        cell_counts[cell] = count + 1
+    groups = np.array(
+        ["spatial_holdout" if value else "fit" for value in check], dtype=object
+    )
+    provenance = "automatic_spatial_holdout_same_features_not_independent_ground_truth"
+    if validation_mask is not None:
+        cs, ct, cr = _orb_matches(gray, src_gray, validation_mask)
+        cs, ct = _refine(gray, src_gray, cs, ct, cr)
+        cs, ct = _distinct_points(cs, ct)
+        if len(cs) < 6:
+            return Registration(
+                False,
+                "insufficient_additional_validation",
+                raw_matches=raw,
+                refined_matches=len(source) + len(cs),
+            )
+        check = np.concatenate((check, np.ones(len(cs), bool)))
+        groups = np.concatenate(
+            (groups, np.full(len(cs), "additional_mask", dtype=object))
+        )
+        source, target = np.vstack((source, cs)), np.vstack((target, ct))
+        provenance = (
+            "spatial_holdout_plus_disjoint_regions_same_features_"
+            "not_independent_ground_truth"
+        )
+    fit = ~check
+    if fit.sum() < 25:
+        return Registration(
+            False,
+            "insufficient_refined_features",
+            matches=int(fit.sum()),
+            raw_matches=raw,
+            refined_matches=len(source),
+        )
+    matrix, selected = cv2.estimateAffinePartial2D(
+        source[fit],
+        target[fit],
         method=cv2.RANSAC,
         ransacReprojThreshold=2.0,
         maxIters=3000,
@@ -85,41 +559,21 @@ def register_background(
         refineIters=10,
     )
     if matrix is None or selected is None:
-        return Registration(False, "background_fit_failed", matches=len(matches))
-    good = selected.ravel().astype(bool)
-    count = int(good.sum())
-    fraction = count / len(matches)
-    points = target[good]
-    coverage = (
-        cv2.contourArea(cv2.convexHull(points)) / (width * height) if count >= 3 else 0
-    )
-    cells = {
-        (min(3, int(x * 4 / width)), min(2, int(y * 3 / height))) for x, y in points
-    }
-    errors = np.linalg.norm(source @ matrix[:, :2].T + matrix[:, 2] - target, axis=1)
-    residual = float(np.quantile(errors[good], 0.9)) if count else None
-    scale = hypot(matrix[0, 0], matrix[1, 0])
-    angle = abs(degrees(atan2(matrix[1, 0], matrix[0, 0])))
-    shift = hypot(matrix[0, 2], matrix[1, 2])
-    reason = "background_aligned"
-    if count < 25 or fraction < 0.60 or residual > 1.5:
-        reason = "unreliable_background_fit"
-    elif coverage < 0.15 or len(cells) < 6:
-        reason = "insufficient_spatial_coverage"
-    elif (
-        abs(scale - 1) > 0.005
-        or angle > 0.75
-        or shift > max(8, 0.012 * hypot(width, height))
-    ):
-        reason = "camera_view_changed"
-    return Registration(
-        reason == "background_aligned",
-        reason,
-        tuple(tuple(float(v) for v in row) for row in matrix),
-        len(matches),
-        count,
-        fraction,
-        residual,
-        float(coverage),
-        len(cells),
+        return Registration(
+            False, "background_fit_failed", matches=int(fit.sum()), raw_matches=raw
+        )
+    good = np.zeros(len(source), bool)
+    good[fit] = selected.ravel().astype(bool)
+    good[check] = _errors(matrix, source[check], target[check]) <= 2
+    return _evaluate(
+        source,
+        target,
+        check,
+        matrix,
+        good,
+        reference.shape,
+        method="orb_native_holdout",
+        raw_matches=raw,
+        provenance=provenance,
+        check_groups=groups,
     )

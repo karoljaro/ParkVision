@@ -1,6 +1,7 @@
 """Fuse finite, traceable marking observations, never images or vehicle masks."""
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
+import json
 from hashlib import sha256
 from math import hypot
 
@@ -30,6 +31,13 @@ class GeometryFrame:
     source_id: str
     image_id: str
     image_sha256: str | None = None
+    registration_points: dict | None = None
+    background_mask: NDArray[np.uint8] | None = field(
+        default=None, compare=False, repr=False
+    )
+    validation_mask: NDArray[np.uint8] | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +64,11 @@ def _same(first: LineSegment, second: LineSegment, distance: float, gap: float) 
 def _overlap(first, second) -> float:
     a = np.float32([(p.x, p.y) for p in first.proposal.polygon.vertices])
     b = np.float32([(p.x, p.y) for p in second.proposal.polygon.vertices])
+    # Near-coincident float32 edges can make intersectConvexConvex report zero.
+    # Bidirectional vertex proximity catches only subpixel duplicate geometry.
+    distances = np.linalg.norm(a[:, None] - b[None, :], axis=2)
+    if max(distances.min(axis=0).max(), distances.min(axis=1).max()) < 1e-4:
+        return 1.0
     area, _ = cv2.intersectConvexConvex(a, b)
     return area / max(1e-12, min(abs(cv2.contourArea(a)), abs(cv2.contourArea(b))))
 
@@ -123,6 +136,7 @@ def analyze_frames(
     frames: tuple[GeometryFrame, ...],
     *,
     background_mask: NDArray[np.uint8] | None = None,
+    validation_mask: NDArray[np.uint8] | None = None,
     detector: OpenCVSlotDetector | None = None,
 ) -> MultiFrameInitialization:
     """Reference is first. Extra views fail closed and cannot erase its full ROI.
@@ -186,7 +200,33 @@ def analyze_frames(
             record.update(reason="duplicate_pixels", transform=IDENTITY)
             continue
         if index:
-            registration = register_background(image, pixels, background_mask)
+            options = {}
+            fit_mask = (
+                item.background_mask
+                if item.background_mask is not None
+                else background_mask
+            )
+            check_mask = (
+                item.validation_mask
+                if item.validation_mask is not None
+                else validation_mask
+            )
+            if check_mask is not None:
+                options["validation_mask"] = check_mask
+            if item.registration_points is not None:
+                options["control_points"] = item.registration_points
+                record["registration_points_input_sha256"] = sha256(
+                    json.dumps(item.registration_points, sort_keys=True).encode()
+                ).hexdigest()
+            record["registration_mask_sha256"] = (
+                sha256(fit_mask.tobytes()).hexdigest() if fit_mask is not None else None
+            )
+            record["validation_mask_sha256"] = (
+                sha256(check_mask.tobytes()).hexdigest()
+                if check_mask is not None
+                else None
+            )
+            registration = register_background(image, pixels, fit_mask, **options)
             record["registration"] = asdict(registration)
             record["reason"] = registration.reason
             record["transform"] = registration.matrix
@@ -213,7 +253,10 @@ def analyze_frames(
             "separators": len(result.pairs),
             "corners": len(result.topology.junctions),
             "full_roi": sum(c.proposal is not None for c in result.candidates),
-            "partial": sum(c.geometry_kind == "partial" for c in result.candidates),
+            "partial": sum(
+                c.geometry_kind == "partial" and c.rejection_code is None
+                for c in result.candidates
+            ),
         }
         record["source_topology"] = asdict(result.topology)
         # Preserve reference IDs so baseline candidates remain valid after fusion.
@@ -529,8 +572,26 @@ def analyze_frames(
                 protected.append(candidate)
         baseline_full = tuple(protected)
         full_keys = {frozenset(c.separator_ids) for c in baseline_full}
+        known_rejections = {
+            frozenset(aliases.get(i, i) for i in c.separator_ids): c
+            for c in base.candidates
+            if c.rejection_code
+        }
         additions = list(disputed)
         for candidate in geometry.candidates:
+            prior = known_rejections.get(frozenset(candidate.separator_ids))
+            if prior is not None:
+                candidate = replace(
+                    candidate,
+                    status="unresolved",
+                    proposal=None,
+                    geometry_kind="partial",
+                    rejection_code=prior.rejection_code,
+                    rejection_line_ids=tuple(
+                        aliases.get(i, i) for i in prior.rejection_line_ids
+                    ),
+                    reason=prior.reason,
+                )
             if (
                 candidate.proposal is None
                 and frozenset(candidate.separator_ids) in full_keys
@@ -613,7 +674,14 @@ def analyze_frames(
             {
                 "reference_candidate_id": candidate_id,
                 "separator_ids": sorted(key),
-                "state": "closed_with_source_support" if closed else "still_unresolved",
+                "state": (
+                    "rejected_non_parking"
+                    if any(c.rejection_code for c in matching)
+                    else "closed_with_source_support" if closed else "still_unresolved"
+                ),
+                "rejection_codes": [
+                    c.rejection_code for c in matching if c.rejection_code
+                ],
                 "missing_before": candidate.missing_boundaries,
                 "missing_after": [c.missing_boundaries for c in matching],
                 "reasons": [c.reason for c in matching],
