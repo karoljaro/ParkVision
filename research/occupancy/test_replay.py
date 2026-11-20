@@ -12,6 +12,7 @@ import pytest
 
 import observe
 import replay
+from models import SLOT_SHA256
 
 REPO = Path(__file__).resolve().parents[2]
 BASE = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
@@ -146,8 +147,66 @@ def test_mixed_camera_revision_session_is_an_error(frames, tmp_path, field, valu
         replay.replay(manifest(tmp_path, frames), "slot-01")
 
 
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        (
+            {"selected_model": "acpds-rcnn"},
+            {"selected_model": "convnext-roi4", "models": None},
+        ),
+        (
+            {"models": {"per_slot": {"sha256": SLOT_SHA256}}},
+            {"selected_model": "convnext-roi4"},
+        ),
+        (
+            {
+                "selected_model": "convnext-roi4",
+                "models": {"per_slot": {"sha256": "a"}},
+            },
+            {
+                "selected_model": "convnext-roi4",
+                "models": {"per_slot": {"sha256": "b"}},
+            },
+        ),
+    ],
+)
+def test_mixed_backend_or_checkpoint_never_shares_a_state(
+    frames, tmp_path, first, second
+):
+    rewrite(frames[0], lambda data: data.update(provenance=first))
+    rewrite(frames[-1], lambda data: data.update(provenance=second))
+    with pytest.raises(ValueError, match="Mixed occupancy model"):
+        replay.replay(manifest(tmp_path, frames), "slot-01")
+
+
+def test_legacy_checkpoint_accepts_matching_backend_without_loaded_model(
+    frames, tmp_path
+):
+    rewrite(
+        frames[0],
+        lambda data: data.update(
+            provenance={"models": {"per_slot": {"sha256": SLOT_SHA256}}}
+        ),
+    )
+    rewrite(
+        frames[-1],
+        lambda data: data.update(
+            provenance={"selected_model": "acpds-rcnn", "models": None}
+        ),
+    )
+    assert len(replay.replay(manifest(tmp_path, frames), "slot-01")["snapshots"]) == 4
+
+
 def test_explicit_session_reset_and_motion_gate(frames, tmp_path):
     rewrite(frames[-1], lambda data: data.update(source_session="new", sequence=0))
+    rewrite(
+        frames[0],
+        lambda data: data.update(provenance={"selected_model": "acpds-rcnn"}),
+    )
+    rewrite(
+        frames[-1],
+        lambda data: data.update(provenance={"selected_model": "convnext-roi4"}),
+    )
     path = manifest(tmp_path, frames[:-1])
     data = json.loads(path.read_text())
     data["events"].append({"observation": frames[-1].name, "reset": True})

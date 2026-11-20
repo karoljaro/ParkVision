@@ -111,6 +111,11 @@ stan wyłącznie jako `held` z nieodnawialnym TTL 3 s. Heartbeat obsługuje cisz
 Parametry i ograniczenia opisuje
 [kontrakt temporalny](../../apps/engine/docs/temporal-occupancy.md).
 
+Dla każdego backendu przygotuj osobny manifest. Replay odrzuca zmianę znanego
+backendu lub SHA-256 checkpointu klasyfikatora w jednym stanie. Dla starszych
+obserwacji zapisany SHA-256 przypiętej wagi pozwala ustalić backend. Brak
+metadanych modelu w obserwacji nie kasuje ustalonej tożsamości.
+
 ```bash
 apps/engine/.venv/bin/python research/occupancy/replay.py \
   --manifest research/occupancy/examples/temporal-v1/manifest.json \

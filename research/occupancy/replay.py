@@ -24,6 +24,7 @@ from parkvision.domain.temporal_occupancy import (  # noqa: E402
 )
 
 # Reuse the offline command's exclusive, atomic publication; no model is loaded.
+from models import CONVNEXT_SHA256, SLOT_SHA256  # noqa: E402
 from observe import save_result  # noqa: E402
 
 AGGREGATOR_ID = "temporal-occupancy-v1"
@@ -123,6 +124,29 @@ def json_value(value):
     return value
 
 
+def observation_model_identity(data):
+    provenance = data.get("provenance") or {}
+    models = provenance.get("models") or {}
+    per_slot = models.get("per_slot") or {}
+    checkpoint = per_slot.get("sha256")
+    backend = provenance.get("selected_model")
+    # Older schema v1 runs identified the loaded checkpoint instead of the CLI model.
+    known_backend = {
+        SLOT_SHA256: "acpds-rcnn",
+        CONVNEXT_SHA256: "convnext-roi4",
+    }.get(checkpoint)
+    if backend is not None and known_backend is not None and backend != known_backend:
+        raise ValueError("Occupancy backend does not match its checkpoint")
+    return {
+        field: value
+        for field, value in {
+            "backend": backend if backend is not None else known_backend,
+            "per_slot_checkpoint": checkpoint,
+        }.items()
+        if value is not None
+    }
+
+
 def replay(manifest_path, slot_id, policy=None):
     """Input order is arrival order. No sorting, wall clock, weights or inference."""
     manifest, manifest_sha = read_json(manifest_path)
@@ -137,6 +161,7 @@ def replay(manifest_path, slot_id, policy=None):
     if not isinstance(events, list) or not events:
         raise ValueError("Replay requires at least one observation event")
     state = None
+    stream_model = {}
     snapshots = []
     for index, event in enumerate(events):
         if not isinstance(event, dict):
@@ -149,6 +174,7 @@ def replay(manifest_path, slot_id, policy=None):
                 raise ValueError("Unsupported observation event fields")
             source = event["observation"]
             data, source_sha = read_json(manifest_path.parent / source)
+            identity = observation_model_identity(data)
             raw_observation = observation_from_document(
                 data,
                 slot_id,
@@ -169,6 +195,13 @@ def replay(manifest_path, slot_id, policy=None):
                 state = initial_state(raw_observation.key, at)
             elif event.get("reset", False):
                 state = reset_stream(state, raw_observation.key, at)
+                stream_model.clear()
+            if any(
+                key in stream_model and stream_model[key] != value
+                for key, value in identity.items()
+            ):
+                raise ValueError("Mixed occupancy model; use a separate replay stream")
+            stream_model.update(identity)
             update = observe_slot(state, raw_observation, at, policy)
             state, disposition = update.state, update.disposition
             kind = "observation"
