@@ -6,6 +6,7 @@ import math
 import os
 import sys
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -24,7 +25,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from parkvision.capture.frame import Frame  # noqa: E402
-from parkvision.configuration import load_configuration  # noqa: E402
+from parkvision.configuration import (  # noqa: E402
+    ParkingConfiguration,
+    load_configuration,
+)
+from parkvision.domain.slot_projection import SlotProjection  # noqa: E402
 from parkvision.domain.types import CameraId  # noqa: E402
 
 from research.occupancy.models import MODEL_CHOICES, load_models  # noqa: E402
@@ -94,62 +99,68 @@ def input_reason(
     return None
 
 
-def observe(args, models_factory=None):
-    selected_model = getattr(args, "model", "acpds-rcnn")
-    if selected_model not in MODEL_CHOICES:
-        raise ValueError(f"Unknown occupancy model: {selected_model}")
-    config_bytes = args.configuration.read_bytes()
-    configuration = load_configuration(args.configuration)
-    if args.configuration.read_bytes() != config_bytes:
-        raise ValueError("Configuration changed during reading")
-    if not args.session_id.strip():
-        raise ValueError("Session ID must be nonempty")
-    if args.camera_id not in configuration.camera_image_sizes:
-        raise ValueError(f"Unknown camera in configuration: {args.camera_id}")
-    width, height = configuration.camera_image_sizes[args.camera_id]
-    projections = configuration.projections_for_camera(
-        args.camera_id, image_width=width, image_height=height
-    )
-    if not projections:
-        raise ValueError("No configured slot projections for this camera")
-    unreadable = set(args.unreadable_slot_id)
-    slot_ids = {p.parking_slot_id for p in projections}
-    if not unreadable <= slot_ids:
-        raise ValueError("Unreadable slot IDs must belong to the selected camera")
-    evaluated_at = args.evaluated_at or datetime.now(timezone.utc)
-    config_sha = sha256(config_bytes).hexdigest()
-    raw = None
-    image = None
-    reason = None
-    detail = None
-    try:
-        raw = args.image.read_bytes()
-        if raw:
-            image = cv2.imdecode(
-                np.frombuffer(raw, np.uint8),
-                cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION,
-            )
-    except FileNotFoundError:
-        reason = "missing_frame"
-    except OSError as error:
-        reason, detail = "invalid_frame", str(error)
-    except cv2.error as error:
-        reason, detail = "invalid_frame", str(error)
+@dataclass(frozen=True, slots=True)
+class ObservationSetup:
+    configuration: ParkingConfiguration
+    configuration_sha256: str
+    camera_id: str
+    projections: tuple[SlotProjection, ...]
+
+    @classmethod
+    def read(cls, path, camera_id):
+        config_bytes = path.read_bytes()
+        configuration = load_configuration(path)
+        if path.read_bytes() != config_bytes:
+            raise ValueError("Configuration changed during reading")
+        if camera_id not in configuration.camera_image_sizes:
+            raise ValueError(f"Unknown camera in configuration: {camera_id}")
+        width, height = configuration.camera_image_sizes[camera_id]
+        projections = configuration.projections_for_camera(
+            camera_id, image_width=width, image_height=height
+        )
+        if not projections:
+            raise ValueError("No configured slot projections for this camera")
+        return cls(
+            configuration, sha256(config_bytes).hexdigest(), camera_id, projections
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationRequest:
+    session_id: str
+    sequence: int
+    captured_at: datetime | None
+    evaluated_at: datetime
+    max_age_seconds: float
+    view_confirmed: bool
+    model: str
+    image_source: str
+    image_sha256: str | None
+    unreadable_slot_ids: frozenset[str] = frozenset()
+    evaluation_clock: str = "provided"
+
+
+def observe_pixels(setup, request, image, model_provider, *, failure=(None, None)):
+    """Classify decoded pixels using the caller's model and approved setup."""
+    configuration = setup.configuration
+    projections = setup.projections
+    width, height = configuration.camera_image_sizes[setup.camera_id]
+    unreadable = request.unreadable_slot_ids
+    reason, detail = failure
     if reason is None:
         reason = input_reason(
             image,
-            args.camera_id,
+            setup.camera_id,
             configuration,
-            args.captured_at,
-            evaluated_at,
-            args.max_age_seconds,
-            args.view_confirmed,
+            request.captured_at,
+            request.evaluated_at,
+            request.max_age_seconds,
+            request.view_confirmed,
         )
-    image_sha = sha256(raw).hexdigest() if raw is not None else None
     provenance = {
         "baseline_id": BASELINE_ID,
         "models": None,
-        "selected_model": selected_model,
+        "selected_model": request.model,
     }
     observations = [
         {
@@ -171,17 +182,13 @@ def observe(args, models_factory=None):
     detections = []
     if reason is None:
         frame = Frame(
-            camera_id=str(args.camera_id),
-            sequence=args.sequence,
-            captured_at=args.captured_at,
+            camera_id=str(setup.camera_id),
+            sequence=request.sequence,
+            captured_at=request.captured_at,
             image=image,
         )
         try:
-            models = (
-                models_factory(args.assets, device=args.device)
-                if models_factory is not None
-                else load_models(args.assets, device=args.device, model=selected_model)
-            )
+            models = model_provider()
             provenance["models"] = models.provenance
             probabilities, detections = models.predict(frame, projections)
             if len(probabilities) != len(projections):
@@ -220,18 +227,18 @@ def observe(args, models_factory=None):
         "kind": "experimental_offline_occupancy",
         "parking_id": configuration.parking.id,
         "configuration_revision": configuration.revision,
-        "configuration_sha256": config_sha,
-        "camera_id": args.camera_id,
-        "source_session": args.session_id,
-        "sequence": args.sequence,
-        "captured_at": args.captured_at.isoformat() if args.captured_at else None,
-        "evaluated_at": evaluated_at.isoformat(),
-        "evaluation_clock": "provided" if args.evaluated_at else "system_utc",
-        "max_age_seconds": args.max_age_seconds,
-        "view_confirmed": args.view_confirmed,
+        "configuration_sha256": setup.configuration_sha256,
+        "camera_id": setup.camera_id,
+        "source_session": request.session_id,
+        "sequence": request.sequence,
+        "captured_at": request.captured_at.isoformat() if request.captured_at else None,
+        "evaluated_at": request.evaluated_at.isoformat(),
+        "evaluation_clock": request.evaluation_clock,
+        "max_age_seconds": request.max_age_seconds,
+        "view_confirmed": request.view_confirmed,
         "image": {
-            "path": str(args.image.resolve()),
-            "sha256": image_sha,
+            "path": request.image_source,
+            "sha256": request.image_sha256,
             "width": int(image.shape[1]) if image is not None else None,
             "height": int(image.shape[0]) if image is not None else None,
         },
@@ -241,6 +248,56 @@ def observe(args, models_factory=None):
         "observations": observations,
         "detections": detections,
     }
+
+
+def observe(args, models_factory=None):
+    selected_model = getattr(args, "model", "acpds-rcnn")
+    if selected_model not in MODEL_CHOICES:
+        raise ValueError(f"Unknown occupancy model: {selected_model}")
+    setup = ObservationSetup.read(args.configuration, args.camera_id)
+    if not args.session_id.strip():
+        raise ValueError("Session ID must be nonempty")
+    unreadable = frozenset(args.unreadable_slot_id)
+    if not unreadable <= {p.parking_slot_id for p in setup.projections}:
+        raise ValueError("Unreadable slot IDs must belong to the selected camera")
+    evaluated_at = args.evaluated_at or datetime.now(timezone.utc)
+    raw = None
+    image = None
+    reason = None
+    detail = None
+    try:
+        raw = args.image.read_bytes()
+        if raw:
+            image = cv2.imdecode(
+                np.frombuffer(raw, np.uint8),
+                cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION,
+            )
+    except FileNotFoundError:
+        reason = "missing_frame"
+    except OSError as error:
+        reason, detail = "invalid_frame", str(error)
+    except cv2.error as error:
+        reason, detail = "invalid_frame", str(error)
+    request = ObservationRequest(
+        session_id=args.session_id,
+        sequence=args.sequence,
+        captured_at=args.captured_at,
+        evaluated_at=evaluated_at,
+        max_age_seconds=args.max_age_seconds,
+        view_confirmed=args.view_confirmed,
+        model=selected_model,
+        image_source=str(args.image.resolve()),
+        image_sha256=sha256(raw).hexdigest() if raw is not None else None,
+        unreadable_slot_ids=unreadable,
+        evaluation_clock="provided" if args.evaluated_at else "system_utc",
+    )
+
+    def get_models():
+        if models_factory is not None:
+            return models_factory(args.assets, device=args.device)
+        return load_models(args.assets, device=args.device, model=selected_model)
+
+    return observe_pixels(setup, request, image, get_models, failure=(reason, detail))
 
 
 def save_result(path, result):

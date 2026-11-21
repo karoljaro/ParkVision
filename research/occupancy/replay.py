@@ -24,8 +24,12 @@ from parkvision.domain.temporal_occupancy import (  # noqa: E402
 )
 
 # Reuse the offline command's exclusive, atomic publication; no model is loaded.
-from models import CONVNEXT_SHA256, SLOT_SHA256  # noqa: E402
-from observe import save_result  # noqa: E402
+if __package__:
+    from .models import CONVNEXT_SHA256, SLOT_SHA256
+    from .observe import save_result
+else:
+    from models import CONVNEXT_SHA256, SLOT_SHA256
+    from observe import save_result
 
 AGGREGATOR_ID = "temporal-occupancy-v1"
 

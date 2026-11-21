@@ -127,3 +127,11 @@ kontraktu, nie poprawę jakości na nagraniu. Stan confirmed/occupied nie
 oznacza wykrytego postoju ani zdarzenia przyjazdu. Widoczność unassessed
 pozostaje ograniczeniem także po agregacji. Źródłowe JSON nie są zmieniane;
 przy kolejnym uruchomieniu wybierz nową ścieżkę wyjściową.
+
+## Single-Camera Live Occupancy
+
+`python -m research.occupancy.live` uruchamia jeden plik wideo lub strumień
+RTSP. Współdzieli klasyfikację klatki z `observe.py` i stan domenowy z
+`replay.py`. W dzienniku zapisuje surową obserwację i aktualizację. Bieżący
+snapshot zalicza do dostępności wyłącznie fizyczne `confirmed/free`.
+[Instrukcja uruchomienia, format i diagnostyka](../../apps/engine/docs/live-occupancy.md).
