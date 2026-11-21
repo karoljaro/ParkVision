@@ -140,7 +140,9 @@ class ObservationRequest:
     evaluation_clock: str = "provided"
 
 
-def observe_pixels(setup, request, image, model_provider, *, failure=(None, None)):
+def observe_pixels(
+    setup, request, image, model_provider, *, failure=(None, None), timings=None
+):
     """Classify decoded pixels using the caller's model and approved setup."""
     configuration = setup.configuration
     projections = setup.projections
@@ -190,7 +192,12 @@ def observe_pixels(setup, request, image, model_provider, *, failure=(None, None
         try:
             models = model_provider()
             provenance["models"] = models.provenance
-            probabilities, detections = models.predict(frame, projections)
+            if timings is None:
+                probabilities, detections = models.predict(frame, projections)
+            else:
+                probabilities, detections = models.predict(
+                    frame, projections, timings=timings
+                )
             if len(probabilities) != len(projections):
                 raise ValueError(
                     "Per-slot output does not cover exactly the camera ROIs"
@@ -343,7 +350,7 @@ def build_parser():
     parser.add_argument("--unreadable-slot-id", action="append", default=[])
     parser.add_argument("--assets", type=Path, required=True)
     parser.add_argument("--model", choices=MODEL_CHOICES, default="acpds-rcnn")
-    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--device", choices=("cpu", "cuda", "auto"), default="cpu")
     parser.add_argument("--output", type=Path, required=True)
     return parser
 

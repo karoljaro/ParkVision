@@ -10,6 +10,7 @@ from research.occupancy.live_output import LiveOutput
 from research.occupancy.models import CONVNEXT_SHA256, SLOT_SHA256
 from research.occupancy.observe import ObservationSetup
 
+from parkvision.capture.camera_integrity import IntegrityResult
 from parkvision.capture.frame import Frame
 from parkvision.capture.occupancy_source import FrameEvent
 
@@ -58,8 +59,23 @@ class Events:
         self.closed = True
 
 
+class FixedView:
+    def check(self, image):
+        code = int(image[0, 0, 0])
+        status = {2: "mismatch", 3: "unverifiable"}.get(code, "verified")
+        return IntegrityResult(status, status + "_fixture", "a" * 64, "b" * 64)
+
+
 class Model:
-    provenance = {"per_slot": {"sha256": SLOT_SHA256}, "implementation": "test_mock"}
+    provenance = {
+        "per_slot": {"sha256": SLOT_SHA256},
+        "implementation": "test_mock",
+        "device_selection": {
+            "requested": "auto",
+            "selected": "cpu",
+            "reason": "fixture",
+        },
+    }
 
     def predict(self, frame, projections):
         score = 0.97 if frame.image[0, 0, 0] else 0.03
@@ -82,7 +98,16 @@ def frame(seconds, occupied=False, *, seq=None, shape=(720, 1280, 3), skipped=0)
 
 
 def execute(
-    tmp_path, events, *, realtime=False, session=None, source=None, loader=Model
+    tmp_path,
+    events,
+    *,
+    realtime=False,
+    session=None,
+    source=None,
+    loader=Model,
+    reference=FixedView(),
+    view_interval=5,
+    view_ttl=10,
 ):
     session = session or new_session()
     clock = Clock()
@@ -97,6 +122,9 @@ def execute(
             source_id="test",
             video_anchor=None if realtime else ANCHOR,
             view_confirmed=True,
+            integrity_reference=reference,
+            view_check_interval=view_interval,
+            view_valid_seconds=view_ttl,
             clock=source.clock or clock,
         )
     assert source.closed
@@ -182,6 +210,11 @@ def test_silence_expiry_and_session_reset_on_reconnect(tmp_path):
     assert loss["snapshot"]["session_id"] != reset["snapshot"]["session_id"]
     obs = observation_events(logged)
     assert [counts(e)["confirmed_free"] for e in obs] == [0, 0, 1, 0, 0, 1]
+    timing = obs[0]["snapshot"]["frame_timing"]
+    assert timing["received_at"] == at(0).isoformat()
+    assert timing["exposure_at"] is None
+    assert timing["received_at"] <= timing["inference_started_at"]
+    assert timing["inference_started_at"] <= timing["inference_finished_at"]
 
 
 def test_resolution_mismatch_invalidates_current_view(tmp_path):
@@ -193,7 +226,10 @@ def test_resolution_mismatch_invalidates_current_view(tmp_path):
     obs = observation_events(logged)
     assert counts(obs[2])["confirmed_free"] == 1
     assert obs[3]["observation"]["status"] == "dimension_mismatch"
-    assert obs[4]["observation"]["status"] == "view_unverified"
+    assert obs[3]["snapshot"]["camera_integrity"]["status"] == "mismatch"
+    assert obs[4]["observation"]["status"] == "observed"
+    assert obs[4]["snapshot"]["camera_integrity"]["status"] == "verified"
+    assert obs[2]["snapshot"]["session_id"] != obs[4]["snapshot"]["session_id"]
     assert counts(obs[3])["unknown"] == counts(obs[4])["unknown"] == 1
 
 
@@ -339,6 +375,7 @@ def test_external_view_mismatch_revokes_confirmation(tmp_path):
             source_id="test",
             video_anchor=ANCHOR,
             view_confirmed=True,
+            integrity_reference=FixedView(),
             view_check=lambda candidate: candidate.sequence < 9,
         )
     events = [
@@ -362,3 +399,88 @@ def test_convnext_backend_is_pinned_through_the_live_path(tmp_path):
     sample = observation_events(events)[0]
     assert sample["observation"]["provenance"]["selected_model"] == "convnext-roi4"
     assert sample["snapshot"]["model"]["checkpoint_sha256"] == CONVNEXT_SHA256
+
+
+def test_reference_is_required_even_with_operator_cli_flag(tmp_path):
+    class ForbiddenInference(Model):
+        def predict(self, frame, projections):
+            pytest.fail("Model must not run without camera evidence")
+
+    _, logged, _ = execute(
+        tmp_path,
+        [(at(i), frame(i)) for i in range(3)],
+        reference=None,
+        loader=ForbiddenInference,
+    )
+    for event in observation_events(logged):
+        assert counts(event)["unknown"] == 1
+        assert event["observation"]["status"] == "view_unverified"
+        assert event["snapshot"]["camera_integrity"]["reason"] == "reference_required"
+        assert event["snapshot"]["frame_timing"]["inference_started_at"] is None
+        assert event["snapshot"]["frame_timing"]["inference_finished_at"] is None
+
+
+@pytest.mark.parametrize("code,status", [(2, "mismatch"), (3, "unverifiable")])
+def test_periodic_bad_view_with_same_resolution_revokes_and_resets(
+    tmp_path, code, status
+):
+    bad = frame(3)
+    bad.frame.image[0, 0, 0] = code
+    events = (
+        [(at(i), frame(i)) for i in range(3)]
+        + [(at(3), bad)]
+        + [(at(i), frame(i)) for i in range(4, 7)]
+    )
+    _, logged, _ = execute(tmp_path, events, view_interval=1, view_ttl=4)
+    obs = observation_events(logged)
+    assert [counts(e)["confirmed_free"] for e in obs] == [0, 0, 1, 0, 0, 0, 1]
+    assert obs[3]["snapshot"]["camera_integrity"]["status"] == status
+    assert obs[3]["observation"]["status"] == "view_unverified"
+    assert obs[3]["snapshot"]["slots"][0]["slot_id"] == "slot-01"
+    assert obs[2]["snapshot"]["session_id"] != obs[4]["snapshot"]["session_id"]
+    assert obs[2]["snapshot"]["model"]["device"]["selected"] == "cpu"
+
+
+def test_proof_expires_without_frames_and_prior_snapshot_has_deadline(tmp_path):
+    events = [(at(i), frame(i)) for i in range(3)] + [
+        (at(4), FrameEvent("heartbeat")),
+        *[(at(i), frame(i)) for i in range(5, 8)],
+    ]
+    _, logged, _ = execute(
+        tmp_path, events, realtime=True, view_interval=2.5, view_ttl=4
+    )
+    observations = observation_events(logged)
+    prior = observations[2]["snapshot"]
+    assert prior["availability_counts"]["confirmed_free"] == 1
+    assert prior["slots"][0]["confirmed_evidence_expires_at"] == at(4).isoformat()
+    expired = next(row for row in logged if row["event"] == "view_expired")
+    assert (
+        expired["snapshot"]["camera_integrity"]["reason"] == "view_verification_expired"
+    )
+    assert counts(expired)["unknown"] == 1
+    assert [counts(row)["confirmed_free"] for row in observations[3:]] == [0, 0, 1]
+    assert prior["session_id"] != observations[3]["snapshot"]["session_id"]
+
+
+def test_expired_view_discards_in_flight_inference(tmp_path):
+    clock = Clock()
+    source = Events([(at(i), frame(i)) for i in range(4)], clock)
+
+    class SlowModel(Model):
+        def predict(self, frame, projections):
+            if frame.sequence == 9:
+                clock.now = at(4)
+            return super().predict(frame, projections)
+
+    _, logged, _ = execute(
+        tmp_path,
+        [],
+        realtime=True,
+        source=source,
+        loader=SlowModel,
+        view_interval=3.5,
+        view_ttl=4,
+    )
+    last = observation_events(logged)[-1]
+    assert last["observation"]["status"] == "view_unverified"
+    assert counts(last)["unknown"] == 1

@@ -5,6 +5,8 @@ import json
 import sys
 from collections import defaultdict
 from hashlib import sha256
+from itertools import chain
+from time import perf_counter
 
 SLOT_SHA256 = "96901e9003a3710bba964e8cea7dc2cfa90d2c099ff102c98b3f02240748ce52"
 DETECTOR_SHA256 = "dd69338a24b8d7381807e247652bdc356325bcbaf1cd3e092e00e0a1a58706bf"
@@ -12,6 +14,43 @@ POOLER_SHA256 = "258c7e457b6c7edc55f4343e204603c4dfe7cccf06b0e2e69efdef25be0625f
 CONVNEXT_SHA256 = "5f5672cfdea28cdb53942675d748d5f9d6c3abda5bc7fc18abe209d1d1331a23"
 TRAINING_SHA256 = "30e7adc215dbdbf9501b27ea3d554857716eb5ffdd3373087e08d25463c9ec74"
 MODEL_CHOICES = ("acpds-rcnn", "convnext-roi4")
+DEVICE_CHOICES = ("cpu", "cuda", "auto")
+
+
+def resolve_device(requested):
+    """Select a device usable by PyTorch and the shared TorchVision detector."""
+    if requested not in DEVICE_CHOICES:
+        raise ValueError(f"Unknown occupancy device: {requested}")
+    if requested == "cpu":
+        return "cpu", "cpu_requested"
+
+    import torch
+
+    if torch.version.cuda is None:
+        reason = "torch_without_cuda"
+    elif not torch.cuda.is_available():
+        reason = "cuda_not_visible"
+    else:
+        try:
+            from torchvision.ops import nms
+
+            device = f"cuda:{torch.cuda.current_device()}"
+            # Tensor allocation alone can't establish that the detector has CUDA ops.
+            boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0]], device=device)
+            scores = torch.tensor([1.0], device=device)
+            if str(nms(boxes, scores, 0.5).device) != device:
+                raise RuntimeError("TorchVision NMS did not return a CUDA tensor")
+            torch.cuda.synchronize(device)
+            return device, "cuda_probe_passed"
+        except (ImportError, RuntimeError, OSError) as error:
+            if requested == "cuda":
+                raise RuntimeError(
+                    f"CUDA detector runtime probe failed: {error}"
+                ) from error
+            return "cpu", f"cuda_detector_probe_failed: {error}"
+    if requested == "cuda":
+        raise ValueError(f"CUDA is unavailable in this environment ({reason})")
+    return "cpu", reason
 
 
 def file_hash(path):
@@ -67,11 +106,7 @@ class BaselineModels:
         from torchvision.models import resnet50
         from torchvision.ops.misc import FrozenBatchNorm2d
 
-        if device == "cuda" and not torch.cuda.is_available():
-            raise ValueError("CUDA is unavailable in this environment")
-        self.torch = torch
-        self.device = device
-        torch.set_num_threads(4)
+        device_selection = self._configure_device(torch, device)
 
         module_name = "_parkvision_occupancy_acpds_pooling_v1"
         pooler = sys.modules.get(module_name)
@@ -99,8 +134,10 @@ class BaselineModels:
         self.slot.load_state_dict(
             torch.load(paths["per_slot_weights"], map_location="cpu", weights_only=True)
         )
-        self.slot.eval().to(device)
-        self.weights, self.detector = load_detector(paths["detector_weights"], device)
+        self.slot.eval().to(self.device)
+        self.weights, self.detector = load_detector(
+            paths["detector_weights"], self.device
+        )
         self.provenance = {
             "per_slot": {"name": "ACPDS RCNN_128_square_gopro", "sha256": SLOT_SHA256},
             "detector": {
@@ -108,10 +145,61 @@ class BaselineModels:
                 "sha256": DETECTOR_SHA256,
             },
             "pooler_sha256": POOLER_SHA256,
-            "device": device,
+            "device": self.device,
+            "device_selection": device_selection,
+            "component_devices": self._validated_component_devices(),
             "torch": torch.__version__,
             "torchvision": torchvision.__version__,
         }
+
+    def _configure_device(self, torch, requested):
+        self.torch = torch
+        self.device, reason = resolve_device(requested)
+        torch.set_num_threads(4)
+        return {"requested": requested, "selected": self.device, "reason": reason}
+
+    def _validated_component_devices(self):
+        result = {}
+        for name, model in (("per_slot", self.slot), ("detector", self.detector)):
+            devices = {
+                str(tensor.device)
+                for tensor in chain(model.parameters(), model.buffers())
+            }
+            if devices != {self.device}:
+                raise RuntimeError(
+                    f"Expected {name} parameters and buffers on {self.device}, "
+                    f"found {sorted(devices)}"
+                )
+            result[name] = self.device
+        return result
+
+    def synchronize(self):
+        """Wait for work on this model's CUDA device when measuring performance."""
+        if self.device.startswith("cuda:"):
+            self.torch.cuda.synchronize(self.device)
+
+    def device_report(self):
+        memory = None
+        if self.device.startswith("cuda:"):
+            cuda = self.torch.cuda
+            free, total = cuda.mem_get_info(self.device)
+            memory = {
+                "free_bytes": free,
+                "total_bytes": total,
+                "allocated_bytes": cuda.memory_allocated(self.device),
+                "reserved_bytes": cuda.memory_reserved(self.device),
+                "peak_allocated_bytes": cuda.max_memory_allocated(self.device),
+                "peak_reserved_bytes": cuda.max_memory_reserved(self.device),
+            }
+        return {
+            **self.provenance["device_selection"],
+            "component_devices": self._validated_component_devices(),
+            "cuda_memory": memory,
+        }
+
+    def _profile_time(self):
+        self.synchronize()
+        return perf_counter()
 
     def slot_probabilities(self, rgb, tensor, projections):
         torch = self.torch
@@ -144,14 +232,24 @@ class BaselineModels:
                         probabilities[index] = score
         return probabilities
 
-    def predict(self, frame, projections):
+    def predict(self, frame, projections, *, timings=None):
+        """Optionally time synchronized phases without changing model precision."""
         torch = self.torch
+        if timings is not None:
+            started = self._profile_time()
         # Frame is BGR; all backends receive RGB from the same decoded pixels.
         rgb = frame.image[:, :, ::-1].copy()
         tensor = torch.from_numpy(rgb).permute(2, 0, 1).to(self.device)
         with torch.inference_mode():
-            output = self.detector([self.weights.transforms()(tensor)])[0]
+            detector_input = self.weights.transforms()(tensor)
+            if timings is not None:
+                prepared = self._profile_time()
+            output = self.detector([detector_input])[0]
+            if timings is not None:
+                detected = self._profile_time()
             probabilities = self.slot_probabilities(rgb, tensor, projections)
+            if timings is not None:
+                classified = self._profile_time()
         detections = []
         for box, score, label in zip(
             output["boxes"].tolist(),
@@ -162,6 +260,15 @@ class BaselineModels:
             category = self.weights.meta["categories"][label]
             if score >= 0.60 and category in {"car", "bus", "truck", "motorcycle"}:
                 detections.append({"bbox": box, "score": score, "category": category})
+        if timings is not None:
+            finished = self._profile_time()
+            timings.update(
+                preparation_seconds=prepared - started,
+                detector_seconds=detected - prepared,
+                per_slot_seconds=classified - detected,
+                output_seconds=finished - classified,
+                inference_seconds=finished - started,
+            )
         return probabilities, detections
 
 
@@ -204,18 +311,17 @@ class ConvNeXtModels(BaselineModels):
         from research.occupancy.training_v1.data import RECIPE
         from research.occupancy.training_v1.model import ARCHITECTURE, build_model
 
-        if device == "cuda" and not torch.cuda.is_available():
-            raise ValueError("CUDA is unavailable in this environment")
-        torch.set_num_threads(4)
-        self.torch, self.device = torch, device
+        device_selection = self._configure_device(torch, device)
         checkpoint = torch.load(
             paths["per_slot_weights"], map_location="cpu", weights_only=True
         )
         validate_convnext_checkpoint(checkpoint)
         self.slot = build_model()
         self.slot.load_state_dict(checkpoint["state_dict"], strict=True)
-        self.slot.eval().to(device)
-        self.weights, self.detector = load_detector(paths["detector_weights"], device)
+        self.slot.eval().to(self.device)
+        self.weights, self.detector = load_detector(
+            paths["detector_weights"], self.device
+        )
         self.provenance = {
             "per_slot": {
                 "name": "ConvNeXt Tiny ImageNet RGB+ROI epoch 13",
@@ -231,7 +337,9 @@ class ConvNeXtModels(BaselineModels):
                 "name": "Faster R-CNN ResNet-50 FPN v2 COCO_V1",
                 "sha256": DETECTOR_SHA256,
             },
-            "device": device,
+            "device": self.device,
+            "device_selection": device_selection,
+            "component_devices": self._validated_component_devices(),
             "torch": torch.__version__,
             "torchvision": torchvision.__version__,
         }

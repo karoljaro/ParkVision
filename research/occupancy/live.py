@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -17,7 +18,13 @@ import cv2
 import numpy as np
 
 from .live_output import LiveOutput
-from .models import CONVNEXT_SHA256, MODEL_CHOICES, SLOT_SHA256, load_models
+from .models import (
+    CONVNEXT_SHA256,
+    DEVICE_CHOICES,
+    MODEL_CHOICES,
+    SLOT_SHA256,
+    load_models,
+)
 from .observe import (
     ObservationRequest,
     ObservationSetup,
@@ -44,10 +51,80 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
+class ViewMonitor:
+    """Schedule checks and limit the lifetime of evidence from an approved image."""
+
+    def __init__(self, reference, interval, ttl):
+        if not 0 < interval < ttl or not isfinite(ttl):
+            raise ValueError(
+                "View check interval must be positive and less than its TTL"
+            )
+        self.reference = reference
+        self.interval = timedelta(seconds=interval)
+        self.ttl = timedelta(seconds=ttl)
+        self.status = "unverifiable"
+        self.reason = "reference_required" if reference is None else "check_required"
+        self.checked_at = None
+        self.valid_until = None
+        self.next_check = None
+        self.check_in_progress = False
+        self.evidence = None
+
+    def verified(self, at):
+        return self.status == "verified" and at < self.valid_until
+
+    def due(self, at):
+        return self.reference is not None and (
+            self.next_check is None or at >= self.next_check
+        )
+
+    def invalidate(self, reason, *, status="unverifiable"):
+        self.status = status if self.reference is not None else "unverifiable"
+        self.reason = reason if self.reference is not None else "reference_required"
+        self.valid_until = self.next_check = None
+
+    def begin(self, at):
+        self.check_in_progress = True
+        if not self.verified(at):
+            self.status, self.reason = "checking", "registration_in_progress"
+
+    def finish(self, result, captured_at, at):
+        self.check_in_progress = False
+        self.checked_at = at
+        self.next_check = captured_at + self.interval
+        self.evidence = asdict(result)
+        self.status, self.reason = result.status, result.reason
+        self.valid_until = (
+            captured_at + self.ttl if result.status == "verified" else None
+        )
+        if self.status == "verified" and not self.verified(at):
+            self.invalidate("view_check_result_expired")
+
+    def describe(self, at):
+        expired = self.status == "verified" and not self.verified(at)
+        return {
+            "status": "unverifiable" if expired else self.status,
+            "reason": "view_verification_expired" if expired else self.reason,
+            "check_in_progress": self.check_in_progress,
+            "checked_at": iso(self.checked_at),
+            "valid_until": iso(self.valid_until),
+            "evidence": self.evidence,
+        }
+
+
 class LiveSession:
     """Keep one backend and one approved view pinned until the process restarts."""
 
-    def __init__(self, setup, parking_id, session_id, backend, diagnostic_slot_ids=()):
+    def __init__(
+        self,
+        setup,
+        parking_id,
+        session_id,
+        backend,
+        diagnostic_slot_ids=(),
+        *,
+        requested_device=None,
+    ):
         configuration = setup.configuration
         if not configuration.is_approved or configuration.parking.id != parking_id:
             raise ValueError("Approved configuration does not match the parking ID")
@@ -74,6 +151,7 @@ class LiveSession:
         self.states = {}
         self.raw = {}
         self.model_provenance = None
+        self.device = {"requested": requested_device, "selected": None, "reason": None}
         self.last_frame_at = None
         self.last_sequence = None
         self.latest_pts = None
@@ -118,14 +196,19 @@ class LiveSession:
                 "Loaded model does not match the pinned occupancy checkpoint"
             )
 
-    def advance(self, at, *, disconnected=False):
-        self.states = {
-            slot: (
-                disconnect(state, at) if disconnected else tick(state, at, self.policy)
-            )
-            for slot, state in self.states.items()
-        }
-        if disconnected:
+    def advance(self, at, *, disconnected=False, view_revoked=False):
+        if disconnected or view_revoked:
+            reason = "view_unverified" if view_revoked else "camera_disconnected"
+            self.states = {
+                slot: replace(disconnect(state, at), reason=reason)
+                for slot, state in self.states.items()
+            }
+        else:
+            self.states = {
+                slot: tick(state, at, self.policy)
+                for slot, state in self.states.items()
+            }
+        if disconnected or view_revoked:
             self.raw = {}
             self.last_frame_at = self.latest_pts = None
         self.updated_at = at
@@ -155,7 +238,9 @@ class LiveSession:
         self.latest_pts = pts_seconds
         self.updated_at = at
 
-    def snapshot(self, *, source, published_at, skipped_frames):
+    def snapshot(
+        self, *, source, published_at, skipped_frames, view, frame_timing=None
+    ):
         counts = {
             "physical_total": 0,
             "confirmed_free": 0,
@@ -165,25 +250,38 @@ class LiveSession:
             "stale": 0,
         }
         slots = []
+        as_of = (
+            max(self.updated_at, published_at)
+            if source["kind"] == "rtsp"
+            else self.updated_at
+        )
+        view_verified = view.verified(as_of)
+        integrity = view.describe(as_of)
         for slot, state in self.states.items():
             diagnostic = slot in self.diagnostic
-            available = state.status == "confirmed" and state.estimated_state == "free"
-            if not diagnostic:
-                counts["physical_total"] += 1
-                category = (
-                    f"confirmed_{state.estimated_state}"
-                    if state.status == "confirmed"
-                    else state.status
-                )
-                counts[category] += 1
+            status, estimate, reason = state.status, state.estimated_state, state.reason
+            if not view_verified and status in {"confirmed", "held"}:
+                status, estimate, reason = "unknown", "unknown", integrity["reason"]
             expiry = None
-            if state.status == "confirmed":
+            if status == "confirmed":
                 expiry = min(
                     state.last_capture_at
                     + timedelta(seconds=self.policy.max_gap_seconds),
                     state.supporting_evidence.captured_at
                     + timedelta(seconds=self.policy.max_observation_age_seconds),
+                    view.valid_until,
                 )
+                if as_of >= expiry:
+                    status, estimate, reason = (
+                        "stale",
+                        "unknown",
+                        "snapshot_evidence_expired",
+                    )
+            available = status == "confirmed" and estimate == "free"
+            if not diagnostic:
+                counts["physical_total"] += 1
+                category = f"confirmed_{estimate}" if status == "confirmed" else status
+                counts[category] += 1
             evidence = state.last_evidence
             raw = self.raw.get(slot)
             slots.append(
@@ -192,9 +290,9 @@ class LiveSession:
                     "diagnostic_only": diagnostic,
                     "raw_state": raw["state"] if raw else None,
                     "unknown_reason": raw["unknown_reason"] if raw else None,
-                    "estimated_state": state.estimated_state,
-                    "temporal_status": state.status,
-                    "temporal_reason": state.reason,
+                    "estimated_state": estimate,
+                    "temporal_status": status,
+                    "temporal_reason": reason,
                     "last_evidence_age_seconds": (
                         (self.updated_at - evidence.captured_at).total_seconds()
                         if evidence
@@ -220,13 +318,16 @@ class LiveSession:
                 "backend": self.backend,
                 "checkpoint_sha256": self.checkpoint,
                 "provenance": self.model_provenance,
+                "device": self.device,
             },
+            "camera_integrity": integrity,
             "source": source,
             "captured_at": iso(self.last_frame_at),
             "source_pts_seconds": self.latest_pts,
             "sequence": self.last_sequence,
             "updated_at": iso(self.updated_at),
             "published_at": iso(published_at),
+            "frame_timing": frame_timing,
             "skipped_frames": skipped_frames,
             "availability_counts": counts,
             "slots": slots,
@@ -247,7 +348,11 @@ def run_live(
     video_anchor=None,
     view_confirmed,
     view_check=None,
+    integrity_reference=None,
+    view_check_interval=5.0,
+    view_valid_seconds=10.0,
     sample_hz=1.0,
+    profile=False,
     clock=utc_now,
 ):
     """Apply the temporal domain to decoded frames, one selected frame at a time."""
@@ -258,16 +363,21 @@ def run_live(
         raise ValueError("The source must be explicitly matched to the approved view")
     if not isfinite(sample_hz) or sample_hz <= 0:
         raise ValueError("Sampling rate must be positive and finite")
+    if profile and live:
+        raise ValueError("Detailed profiling requires a finite video source")
+    view = ViewMonitor(integrity_reference, view_check_interval, view_valid_seconds)
     session.start(clock() if live else video_anchor)
     skipped = processed = event_index = 0
     discarded = 0
     health = "starting"
-    geometry_valid = True
     needs_reset = False
+    view_needs_reset = False
     last_heartbeat = None
     heartbeat_after = min(1.5 / sample_hz, session.policy.max_gap_seconds)
     source_is_current = getattr(source, "is_current", None)
     model_load_seconds = None
+    last_frame_timing = None
+    profiles = []
     started = perf_counter()
     timing_totals = dict(decode=0.0, inference_pipeline=0.0, temporal=0.0, publish=0.0)
 
@@ -276,6 +386,17 @@ def run_live(
 
     def publish(kind, reason=None, **fields):
         nonlocal event_index
+        published_at = clock()
+        timing = last_frame_timing
+        if timing is not None and live:
+            timing = {
+                **timing,
+                "frame_age_seconds": (
+                    (published_at - session.last_frame_at).total_seconds()
+                    if session.last_frame_at is not None
+                    else None
+                ),
+            }
         snapshot = session.snapshot(
             source={
                 "id": source_id,
@@ -283,9 +404,14 @@ def run_live(
                 "time_source": source.time_source,
                 "health": health,
                 "reason": reason,
+                "observations": processed,
+                "discarded_frames": discarded,
+                "observations_per_wall_second": processed / (perf_counter() - started),
             },
-            published_at=clock(),
+            published_at=published_at,
             skipped_frames=skipped,
+            view=view,
+            frame_timing=timing,
         )
         event = {
             "schema_version": 1,
@@ -296,20 +422,41 @@ def run_live(
         }
         before = perf_counter()
         output.publish(event, snapshot)
-        timing_totals["publish"] += perf_counter() - before
+        duration = perf_counter() - before
+        timing_totals["publish"] += duration
         event_index += 1
+        return duration
 
     def lose(at, reason, *, kind="source_lost", new_health="interrupted"):
-        nonlocal needs_reset, health
+        nonlocal needs_reset, health, last_frame_timing
         session.advance(max(at, session.updated_at), disconnected=True)
+        view.invalidate(reason)
+        view.check_in_progress = False
+        last_frame_timing = None
         needs_reset = True
         health = new_health
         publish(kind, reason)
 
-    def evaluate(request, image, models, failure):
+    def evaluate(request, image, models, failure, timings=None):
         return observe_pixels(
-            session.setup, request, image, lambda: models, failure=failure
+            session.setup,
+            request,
+            image,
+            lambda: models,
+            failure=failure,
+            timings=timings,
         )
+
+    def revoke_view(at):
+        nonlocal view_needs_reset
+        session.advance(max(at, session.updated_at), view_revoked=True)
+        view_needs_reset = True
+
+    def expire_view(at):
+        if view.status == "verified" and not view.verified(at):
+            view.invalidate("view_verification_expired")
+            revoke_view(at)
+            publish("view_expired", view.reason)
 
     def heartbeat(reason=None):
         nonlocal health, last_heartbeat
@@ -317,6 +464,7 @@ def run_live(
         if at < session.updated_at:
             lose(at, "processing_clock_went_backwards")
             return
+        expire_view(at)
         if session.last_frame_at is None or needs_reset:
             return
         age = (at - session.last_frame_at).total_seconds()
@@ -330,6 +478,28 @@ def run_live(
         publish("heartbeat", reason)
 
     worker = ThreadPoolExecutor(max_workers=1) if live else None
+
+    def process(event, pending_reason, function, *args):
+        if worker is None:
+            return function(*args)
+        future = worker.submit(function, *args)
+        while True:
+            try:
+                return future.result(timeout=0.25)
+            except TimeoutError:
+                if future.done():
+                    return future.result()
+                if source_is_current is not None and not source_is_current(event):
+                    if not needs_reset:
+                        lose(at_now(), "connection_changed_during_processing")
+                else:
+                    heartbeat(pending_reason)
+
+    def connection_changed(event):
+        return needs_reset or (
+            source_is_current is not None and not source_is_current(event)
+        )
+
     try:
         publish("session_started")
         before_load = perf_counter()
@@ -337,7 +507,11 @@ def run_live(
         model_load_seconds = perf_counter() - before_load
         session.check_model(models.provenance)
         session.model_provenance = deepcopy(models.provenance)
+        session.device = session.model_provenance.get(
+            "device_selection", session.device
+        )
         for event in source:
+            handling_started = perf_counter()
             skipped += event.skipped_frames
             timing_totals["decode"] += event.decode_seconds
             if event.kind == "eof":
@@ -410,10 +584,13 @@ def run_live(
             if needs_reset:
                 session.reset(evaluated)
                 needs_reset = False
+                view_needs_reset = False
                 health = "recovering"
                 publish("source_recovered")
 
+            expire_view(evaluated)
             image = frame.image
+            view_elapsed = 0.0
             if (
                 not isinstance(image, np.ndarray)
                 or image.ndim != 3
@@ -428,9 +605,57 @@ def run_live(
                 ]
                 if image.shape[:2] != (height, width):
                     failure = ("dimension_mismatch", None)
-                    geometry_valid = False
                 elif view_check is not None and not view_check(frame):
-                    geometry_valid = False
+                    failure = ("view_unverified", "External view rejected")
+
+            if failure[0] is not None:
+                was_verified = view.verified(evaluated)
+                status = (
+                    "mismatch" if failure[0] == "dimension_mismatch" else "unverifiable"
+                )
+                view.invalidate(failure[0], status=status)
+                if was_verified:
+                    revoke_view(evaluated)
+                    publish("camera_integrity", view.reason)
+            elif view.due(evaluated):
+                view.begin(evaluated)
+                session.updated_at = evaluated
+                publish("camera_integrity")
+                started_check = perf_counter()
+                result = process(
+                    event, "camera_check_in_progress", view.reference.check, image
+                )
+                view_elapsed = perf_counter() - started_check
+                checked_at = clock() if live else evaluated
+                if connection_changed(event):
+                    discarded += 1
+                    lose(checked_at, "discarded_check_from_interrupted_source")
+                    continue
+                if checked_at < session.updated_at:
+                    discarded += 1
+                    lose(
+                        checked_at,
+                        "processing_clock_went_backwards",
+                        kind="frame_rejected",
+                    )
+                    continue
+                was_verified = view.status == "verified"
+                view.finish(result, captured, checked_at)
+                if (
+                    live
+                    and (checked_at - captured).total_seconds()
+                    >= session.policy.max_gap_seconds
+                ):
+                    view.invalidate("view_check_frame_too_old")
+                if was_verified and not view.verified(checked_at):
+                    revoke_view(checked_at)
+                if view_needs_reset and view.verified(checked_at):
+                    session.reset(checked_at)
+                    view_needs_reset = False
+                session.updated_at = checked_at
+                publish("camera_integrity", view.reason)
+                evaluated = checked_at
+
             session.check_model(models.provenance)
             request = ObservationRequest(
                 session_id=session.session_id,
@@ -442,7 +667,7 @@ def run_live(
                     if live
                     else session.policy.max_observation_age_seconds
                 ),
-                view_confirmed=geometry_valid,
+                view_confirmed=view.verified(evaluated),
                 model=session.backend,
                 image_source=source_id,
                 image_sha256=(
@@ -452,33 +677,37 @@ def run_live(
                 ),
                 evaluation_clock="host_utc" if live else "historical_pts",
             )
+            model_timings = {} if profile else None
+            inference_started_at = clock()
             before = perf_counter()
+            document = process(
+                event,
+                "inference_in_progress",
+                evaluate,
+                request,
+                image,
+                models,
+                failure,
+                model_timings,
+            )
+            inference_finished_at = clock()
+            inference_attempted = failure[0] is None and request.view_confirmed
+            finished_at = inference_finished_at if live else evaluated
             if live:
-                future = worker.submit(evaluate, request, image, models, failure)
-                while True:
-                    try:
-                        document = future.result(timeout=1.0)
-                        break
-                    except TimeoutError:
-                        if future.done():
-                            document = future.result()
-                            break
-                        if source_is_current is not None and not source_is_current(
-                            event
-                        ):
-                            if not needs_reset:
-                                lose(at_now(), "connection_changed_during_inference")
-                        else:
-                            heartbeat("inference_in_progress")
-                finished_at = clock()
-                if needs_reset or (
-                    source_is_current is not None and not source_is_current(event)
-                ):
+                if connection_changed(event):
                     discarded += 1
                     timing_totals["inference_pipeline"] += perf_counter() - before
                     lose(finished_at, "discarded_observation_from_interrupted_source")
                     continue
-                if (
+                expire_view(finished_at)
+                if request.view_confirmed and not view.verified(finished_at):
+                    document = evaluate(
+                        replace(request, view_confirmed=False),
+                        image,
+                        models,
+                        ("view_unverified", view.reason),
+                    )
+                elif (
                     finished_at - captured
                 ).total_seconds() >= session.policy.max_gap_seconds:
                     document = evaluate(
@@ -488,9 +717,6 @@ def run_live(
                         ("stale_frame", "Inference exceeded frame age"),
                     )
                 document["evaluated_at"] = iso(finished_at)
-            else:
-                document = evaluate(request, image, models, failure)
-                finished_at = evaluated
             inference_elapsed = perf_counter() - before
             timing_totals["inference_pipeline"] += inference_elapsed
             if finished_at < session.updated_at:
@@ -507,19 +733,48 @@ def run_live(
             timing_totals["temporal"] += temporal_elapsed
             processed += 1
             health = "streaming" if document["status"] == "observed" else "degraded"
-            publish(
+            last_frame_timing = {
+                "exposure_at": None,
+                "received_at": iso(captured) if live else None,
+                "processing_started_at": iso(inference_started_at),
+                "processing_finished_at": iso(inference_finished_at),
+                "inference_started_at": (
+                    iso(inference_started_at) if inference_attempted else None
+                ),
+                "inference_finished_at": (
+                    iso(inference_finished_at) if inference_attempted else None
+                ),
+                "processing_seconds": inference_elapsed,
+                "frame_age_seconds": None,
+            }
+            timing = {
+                "decode": event.decode_seconds,
+                "view_check": view_elapsed,
+                "inference_pipeline": inference_elapsed,
+                "temporal": temporal_elapsed,
+                **(model_timings or {}),
+            }
+            publication_time = publish(
                 "observation",
                 document["status"] if health == "degraded" else None,
                 observation=document,
                 image_hash_basis="decoded_bgr_uint8",
                 source_pts_seconds=event.pts_seconds,
                 skipped_since_last_event=event.skipped_frames,
-                timing_seconds={
-                    "decode": event.decode_seconds,
-                    "inference_pipeline": inference_elapsed,
-                    "temporal": temporal_elapsed,
-                },
+                timing_seconds=timing,
             )
+            if profile:
+                profiles.append(
+                    {
+                        **timing,
+                        "publish": publication_time,
+                        "decode_through_publish": (
+                            perf_counter() - handling_started + event.decode_seconds
+                        ),
+                        "sequence": frame.sequence,
+                        "status": document["status"],
+                    }
+                )
         if health != "eof":
             lose(at_now(), "source_finished", kind="stopped", new_health="stopped")
     except KeyboardInterrupt:
@@ -543,6 +798,12 @@ def run_live(
         "observations_per_wall_second": processed / elapsed,
         "stage_totals_seconds": timing_totals,
         "model_load_seconds": model_load_seconds,
+        "profile": profiles if profile else None,
+        "device": (
+            models.device_report()
+            if profile and model_load_seconds is not None
+            else session.device
+        ),
     }
 
 
@@ -561,7 +822,11 @@ def build_parser():
     parser.add_argument("--diagnostic-slot-id", action="append", default=[])
     parser.add_argument("--model", choices=MODEL_CHOICES, default="acpds-rcnn")
     parser.add_argument("--assets", type=Path, required=True)
-    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--device", choices=DEVICE_CHOICES, default="cpu")
+    parser.add_argument("--view-reference", type=Path)
+    parser.add_argument("--view-check-interval", type=positive_seconds, default=5.0)
+    parser.add_argument("--view-valid-seconds", type=positive_seconds, default=10.0)
+    parser.add_argument("--profile", action="store_true")
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--sample-hz", type=positive_seconds, default=1.0)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -569,6 +834,7 @@ def build_parser():
 
 
 def main():
+    from parkvision.capture.camera_integrity import CameraIntegrityReference
     from parkvision.capture.occupancy_source import RTSPSource, VideoFileSource
 
     parser = build_parser()
@@ -588,7 +854,22 @@ def main():
         ):
             raise ValueError("Unexpected configuration revision or SHA-256")
         session = LiveSession(
-            setup, args.parking_id, args.session_id, args.model, args.diagnostic_slot_id
+            setup,
+            args.parking_id,
+            args.session_id,
+            args.model,
+            args.diagnostic_slot_id,
+            requested_device=args.device,
+        )
+        reference = (
+            CameraIntegrityReference.load(
+                args.view_reference,
+                setup.configuration,
+                setup.configuration_sha256,
+                setup.camera_id,
+            )
+            if args.view_reference is not None
+            else None
         )
         if args.video is not None:
             source_id = str(args.video.resolve())
@@ -610,7 +891,11 @@ def main():
                 source_id=source_id,
                 video_anchor=args.video_anchor,
                 view_confirmed=args.view_confirmed,
+                integrity_reference=reference,
+                view_check_interval=args.view_check_interval,
+                view_valid_seconds=args.view_valid_seconds,
                 sample_hz=args.sample_hz,
+                profile=args.profile,
             )
     except (OSError, ValueError, RuntimeError, ImportError, cv2.error) as exc:
         parser.exit(1, f"Cannot run occupancy: {exc}\n")
