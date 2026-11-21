@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ParkVision · Panel operatora</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/dashboard.js"></script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="top-inner">
+        <a class="brand" href="/" aria-label="ParkVision, panel operatora">
+          <svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true">
+            <rect
+              x="1"
+              y="1"
+              width="30"
+              height="30"
+              rx="9"
+              fill="currentColor"
+            />
+            <path
+              d="M11 24V8h6a5 5 0 0 1 0 10h-2v6zm4-9h2a2 2 0 0 0 0-4h-2z"
+              fill="#101716"
+            />
+          </svg>
+          ParkVision
+        </a>
+        <nav aria-label="Sekcje panelu">
+          <a href="#stanowiska">Stanowiska</a><a href="#historia">Historia</a>
+        </nav>
+        <span id="api-status" class="badge quiet" role="status"
+          >◷ Łączenie z API</span
+        >
+      </div>
+    </header>
+    <main>
+      <section class="overview" aria-labelledby="page-title">
+        <div class="intro">
+          <div>
+            <h1 id="page-title">Panel operatora</h1>
+            <p id="scope" class="scope">Oczekiwanie na dane runnera</p>
+          </div>
+          <div class="context">
+            <span id="mode" class="badge quiet">◷ Oczekiwanie</span>
+            <p id="updated" class="muted small">Ostatnia aktualizacja —</p>
+          </div>
+        </div>
+        <div id="notice" role="status" class="notice" hidden></div>
+        <div
+          id="counters"
+          class="counters"
+          aria-label="Liczba fizycznych stanowisk"
+        ></div>
+      </section>
+
+      <div class="workspace">
+        <section
+          class="panel spots"
+          id="stanowiska"
+          aria-labelledby="spots-title"
+        >
+          <div class="panel-head">
+            <div>
+              <h2 id="spots-title">Stanowiska</h2>
+              <p id="geometry-label" class="muted small">
+                Wybierz fizyczne stanowisko
+              </p>
+            </div>
+          </div>
+          <div id="diagram" class="diagram">
+            <p>Oczekiwanie na dane stanowisk…</p>
+          </div>
+          <div
+            id="slot-list"
+            class="slot-list"
+            aria-label="Wybór stanowiska"
+          ></div>
+        </section>
+        <div class="side">
+          <section class="panel" aria-labelledby="camera-title">
+            <div class="panel-head">
+              <h2 id="camera-title">Zgodność widoku</h2>
+              <span id="view-status" class="badge quiet">—</span>
+            </div>
+            <dl id="camera-info" class="details"></dl>
+          </section>
+          <section class="panel" aria-labelledby="slot-title">
+            <div class="panel-head">
+              <h2 id="slot-title">Szczegóły miejsca</h2>
+              <span id="slot-status" class="badge quiet">—</span>
+            </div>
+            <dl id="slot-info" class="details">
+              <div>
+                <dt>Stanowisko</dt>
+                <dd>—</dd>
+              </div>
+            </dl>
+          </section>
+        </div>
+      </div>
+      <section class="panel" id="historia" aria-labelledby="history-title">
+        <div class="panel-head">
+          <div>
+            <h2 id="history-title">Historia zdarzeń</h2>
+            <p class="muted small">Ostatnie wpisy dziennika runnera</p>
+          </div>
+          <label class="filter"
+            ><input type="checkbox" id="changes-only" /> Pokaż tylko zmiany i
+            zdarzenia</label
+          >
+        </div>
+        <div id="history" class="history" aria-live="off">
+          <p class="empty">Odczytywanie dziennika…</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

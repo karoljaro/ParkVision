@@ -2,6 +2,8 @@
 
 Runner obsługuje jeden autoryzowany plik wideo lub strumień RTSP i jedną zatwierdzoną rewizję geometrii. Używa istniejącego obserwatora per-slot, Faster R-CNN ResNet-50 FPN v2, reguły D i Temporal Occupancy. Ładuje model i detektor raz na przebieg. Wyniki obserwacji można przekazać do istniejącego replay.
 
+Stan jednego runnera można też wyświetlić w [lokalnym panelu operatora](../../dashboard/README.md).
+
 ## Uruchomienie
 
 Z głównego katalogu repozytorium użyj środowiska research z PyTorch, torchvision i OpenCV. Poniższy przykład działa na syntetycznej konfiguracji i materiale z pakietu Stage 2.
