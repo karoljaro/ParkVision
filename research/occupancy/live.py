@@ -8,10 +8,10 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from math import isfinite
+import os
 from pathlib import Path
 import signal
 from time import perf_counter
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 import cv2
@@ -45,6 +45,7 @@ from parkvision.domain.temporal_occupancy import (
 )
 
 CHECKPOINTS = {"acpds-rcnn": SLOT_SHA256, "convnext-roi4": CONVNEXT_SHA256}
+CLOCK_ERROR = "--video needs --video-anchor; RTSP uses the host UTC receipt clock"
 
 
 def utc_now():
@@ -807,81 +808,121 @@ def run_live(
     }
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
+def add_source_arguments(parser, *, required=True):
+    source = parser.add_mutually_exclusive_group(required=required)
     source.add_argument("--video", type=Path)
     source.add_argument("--rtsp")
+    source.add_argument(
+        "--rtsp-env", action="store_true", help="Read RTSP from PARKVISION_RTSP"
+    )
     parser.add_argument("--video-anchor", type=timestamp)
-    parser.add_argument("--configuration", required=True, type=Path)
+
+
+def add_setup_arguments(parser, *, required=True):
+    parser.add_argument("--configuration", required=required, type=Path)
     parser.add_argument("--configuration-sha256")
     parser.add_argument("--configuration-revision", type=int)
-    parser.add_argument("--parking-id", required=True)
-    parser.add_argument("--camera-id", required=True)
-    parser.add_argument("--view-confirmed", required=True, action="store_true")
+    parser.add_argument("--parking-id", required=required)
+    parser.add_argument("--camera-id", required=required)
+    parser.add_argument("--view-confirmed", required=required, action="store_true")
     parser.add_argument("--diagnostic-slot-id", action="append", default=[])
     parser.add_argument("--model", choices=MODEL_CHOICES, default="acpds-rcnn")
-    parser.add_argument("--assets", type=Path, required=True)
+    parser.add_argument("--assets", type=Path, required=required)
     parser.add_argument("--device", choices=DEVICE_CHOICES, default="cpu")
     parser.add_argument("--view-reference", type=Path)
+    parser.add_argument("--view-reference-sha256")
+    parser.add_argument("--session-id", required=required)
+    parser.add_argument("--output-dir", type=Path, required=required)
+
+
+def prepare_session(args):
+    setup = ObservationSetup.read(args.configuration, args.camera_id)
+    if (
+        args.configuration_sha256 is not None
+        and args.configuration_sha256 != setup.configuration_sha256
+    ) or (
+        args.configuration_revision is not None
+        and args.configuration_revision != setup.configuration.revision
+    ):
+        raise ValueError("Unexpected configuration revision or SHA-256")
+    return LiveSession(
+        setup,
+        args.parking_id,
+        args.session_id,
+        args.model,
+        args.diagnostic_slot_id,
+        requested_device=args.device,
+    )
+
+
+def prepare_reference(args, setup):
+    from parkvision.capture.camera_integrity import CameraIntegrityReference
+
+    if args.view_reference is None:
+        if args.view_reference_sha256 is not None:
+            raise ValueError("A pinned view reference requires a manifest")
+        return None
+    reference = CameraIntegrityReference.load(
+        args.view_reference,
+        setup.configuration,
+        setup.configuration_sha256,
+        setup.camera_id,
+    )
+    if (
+        args.view_reference_sha256 is not None
+        and args.view_reference_sha256 != reference.manifest_sha256
+    ):
+        raise ValueError("Unexpected camera reference manifest SHA-256")
+    return reference
+
+
+def build_source(args, *, sample_hz=None):
+    from parkvision.capture.occupancy_source import RTSPSource, VideoFileSource
+
+    if (args.video is None) != (args.video_anchor is None):
+        raise ValueError(CLOCK_ERROR)
+    if args.video is not None:
+        source = VideoFileSource(
+            args.video, args.camera_id, args.video_anchor, sample_hz=sample_hz
+        )
+        return source, str(args.video.resolve())
+    url = os.environ.pop("PARKVISION_RTSP", "") if args.rtsp_env else args.rtsp
+    if not url:
+        raise ValueError("RTSP source missing; supply PARKVISION_RTSP with --rtsp-env")
+    # Native decoder messages may contain the complete URL. Set these before
+    # opening any capture in the dedicated CLI process.
+    os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+    os.environ["OPENCV_FFMPEG_DEBUG"] = "0"
+    if hasattr(cv2, "setLogLevel"):
+        cv2.setLogLevel(0)
+    else:
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+    return (
+        RTSPSource(url, args.camera_id, sample_hz=sample_hz),
+        f"rtsp/{args.camera_id}",
+    )
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_source_arguments(parser)
+    add_setup_arguments(parser)
     parser.add_argument("--view-check-interval", type=positive_seconds, default=5.0)
     parser.add_argument("--view-valid-seconds", type=positive_seconds, default=10.0)
     parser.add_argument("--profile", action="store_true")
-    parser.add_argument("--session-id", required=True)
     parser.add_argument("--sample-hz", type=positive_seconds, default=1.0)
-    parser.add_argument("--output-dir", type=Path, required=True)
     return parser
 
 
 def main():
-    from parkvision.capture.camera_integrity import CameraIntegrityReference
-    from parkvision.capture.occupancy_source import RTSPSource, VideoFileSource
-
     parser = build_parser()
     args = parser.parse_args()
     if (args.video is None) != (args.video_anchor is None):
-        parser.error(
-            "--video needs --video-anchor; RTSP uses the host UTC receipt clock"
-        )
+        parser.error(CLOCK_ERROR)
     try:
-        setup = ObservationSetup.read(args.configuration, args.camera_id)
-        if (
-            args.configuration_sha256 is not None
-            and args.configuration_sha256 != setup.configuration_sha256
-        ) or (
-            args.configuration_revision is not None
-            and args.configuration_revision != setup.configuration.revision
-        ):
-            raise ValueError("Unexpected configuration revision or SHA-256")
-        session = LiveSession(
-            setup,
-            args.parking_id,
-            args.session_id,
-            args.model,
-            args.diagnostic_slot_id,
-            requested_device=args.device,
-        )
-        reference = (
-            CameraIntegrityReference.load(
-                args.view_reference,
-                setup.configuration,
-                setup.configuration_sha256,
-                setup.camera_id,
-            )
-            if args.view_reference is not None
-            else None
-        )
-        if args.video is not None:
-            source_id = str(args.video.resolve())
-            source = VideoFileSource(
-                args.video, args.camera_id, args.video_anchor, sample_hz=args.sample_hz
-            )
-        else:
-            url = urlsplit(args.rtsp)
-            if url.scheme != "rtsp" or not url.hostname:
-                raise ValueError("Expected an RTSP URL with a host")
-            source_id = f"{url.scheme}://{url.hostname}/{args.camera_id}"
-            source = RTSPSource(args.rtsp, args.camera_id, sample_hz=args.sample_hz)
+        session = prepare_session(args)
+        reference = prepare_reference(args, session.setup)
+        source, source_id = build_source(args, sample_hz=args.sample_hz)
         with LiveOutput(args.output_dir) as writer:
             results = run_live(
                 session,

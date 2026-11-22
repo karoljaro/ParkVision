@@ -4,6 +4,8 @@ Runner obsługuje jeden autoryzowany plik wideo lub strumień RTSP i jedną zatw
 
 Stan jednego runnera można też wyświetlić w [lokalnym panelu operatora](../../dashboard/README.md).
 
+Przy nowym źródle zastosuj [procedurę operatorską Stage 4A](live-occupancy-pilot.md).
+
 ## Uruchomienie
 
 Z głównego katalogu repozytorium użyj środowiska research z PyTorch, torchvision i OpenCV. Poniższy przykład działa na syntetycznej konfiguracji i materiale z pakietu Stage 2.
@@ -26,7 +28,7 @@ research/paint-segmentation/.venv/bin/python -m research.occupancy.live \
 
 - Dla `--model convnext-roi4` podaj `assets-convnext.json`. Loadery weryfikują SHA-256 lokalnych zasobów. `cpu` wymusza CPU i pozostaje wartością domyślną. `cuda` wymaga dostępu do GPU i działającego CUDA NMS w torchvision. `auto` sprawdza oba warunki i zapisuje wybrane urządzenie oraz powód decyzji. Błąd późniejszego ładowania lub inferencji pozostaje błędem tego przebiegu. Pochodzenie modelu zawiera urządzenia jego komponentów.
 - Dla pliku `--video-anchor` podaje czas absolutny **PTS 0** z offsetem. Brakujące, powtarzające się albo cofające PTS przerywają przebieg. Czas ewaluacji pochodzi z osi nagrania. Opóźnienie wykonania na hoście jest mierzone osobno.
-- Dla RTSP zastąp `--video` i `--video-anchor` przez `--rtsp 'rtsp://adres/ścieżka'`. Źródło używa FFmpeg w OpenCV z limitami otwarcia i odczytu około 3 s i ponawia połączenie. Czas klatki to UTC odbioru przez aplikację. Kamera i dekoder mogą ją wcześniej buforować.
+- Dla RTSP zastąp `--video` i `--video-anchor` przez `--rtsp-env` i przekaż adres tylko do procesu w zmiennej `PARKVISION_RTSP`. Wpisy RTSP identyfikują źródło przez logiczne `rtsp/<CameraId>`. Źródło używa FFmpeg w OpenCV z limitami otwarcia i odczytu około 3 s i ponawia połączenie. Czas klatki to UTC odbioru przez aplikację. Kamera i dekoder mogą ją wcześniej buforować.
 - `--sample-hz` (domyślnie 1) określa maksymalne tempo wyboru klatek. Plik jest dekodowany kolejno i próbkowany według PTS. RTSP przechowuje najwyżej jedną oczekującą klatkę i przetwarza najwyżej jedną klatkę naraz. Nowsza klatka zastępuje starszą oczekującą. Wynik RTSP w wieku co najmniej 5 s traci rozstrzygnięcie. Dłuższa przerwa wymaga ponownego zebrania dowodów.
 - Podaj wszystkie regiony diagnostyczne przez powtarzalne `--diagnostic-slot-id`. Schemat ParkingConfiguration v1 nie zawiera ich roli. Regiony uczestniczą w historycznej regule D i wypadają z liczników fizycznych. Opcjonalne `--configuration-revision` i `--configuration-sha256` sprawdzają oczekiwaną rewizję i bajty konfiguracji.
 
@@ -52,7 +54,7 @@ Zapisz manifest JSON obok plików. Uzupełnij SHA-256 każdego pliku i niezmieni
 }
 ```
 
-Flaga `--view-confirmed` pozostaje częścią CLI. Do potwierdzenia dostępności wymagany jest również manifest `--view-reference` i pozytywny wynik sprawdzenia bieżącego obrazu. Bez manifestu runner publikuje stan `unverifiable` bez wnioskowania occupancy. Pierwsza klatka sesji jest porównywana z referencją. Aktualnie działający strumień również podlega kontroli.
+Flaga `--view-confirmed` pozostaje częścią CLI. Do potwierdzenia dostępności wymagany jest również manifest `--view-reference` i pozytywny wynik sprawdzenia bieżącego obrazu. Opcjonalny `--view-reference-sha256` przypina dokładną wersję manifestu. Bez manifestu runner publikuje stan `unverifiable` bez wnioskowania occupancy. Pierwsza klatka sesji jest porównywana z referencją. Aktualnie działający strumień również podlega kontroli.
 
 Rejestracja Phase 4C wykorzystuje korespondencje w obu maskach i zachowuje własne progi. Każdy zestaw musi mieć wystarczające pokrycie przestrzenne wszystkich ROI. Runner stosuje natywne współrzędne i akceptuje przesunięcie wierzchołków do 1,5 px, jeśli dopasowanie i niezależna kontrola je potwierdzają. Większa potwierdzona zmiana daje `mismatch`, a brak wiarygodnych danych daje `unverifiable`. Runner pozostawia zatwierdzoną geometrię bez zmian.
 

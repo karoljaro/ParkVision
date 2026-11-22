@@ -1,6 +1,7 @@
 """Verify whether an approved ROI projection still applies in native pixels."""
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
@@ -172,8 +173,13 @@ class CameraIntegrityReference:
             roi_vertices,
         )
 
-    def check(self, image: NDArray[np.uint8]) -> IntegrityResult:
-        """Return evidence only. Fitted transforms do not change ROI or pixels."""
+    def check(
+        self,
+        image: NDArray[np.uint8],
+        *,
+        review: Callable[[Registration], None] | None = None,
+    ) -> IntegrityResult:
+        """Return evidence and optionally expose matches for operator review."""
         if (
             not isinstance(image, np.ndarray)
             or image.dtype != np.uint8
@@ -191,6 +197,8 @@ class CameraIntegrityReference:
             _interior(self.fit_mask),
             validation_mask=_interior(self.check_mask),
         )
+        if review is not None:
+            review(result)
         diagnostics = _registration_diagnostics(result)
         failures = set(result.failure_reasons)
         if result.matrix is None or (
