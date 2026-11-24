@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import pytest
 
-from parkvision.detection.frame_registration import register_background
+from parkvision.detection.frame_registration import _orb_matches, register_background
 
 
 def _texture(size=(640, 480), seed=23):
@@ -84,6 +84,57 @@ def test_periodic_markings_do_not_prove_a_unique_correspondence():
     mask = np.full(reference.shape[:2], 255, dtype=np.uint8)
     result = register_background(reference, source, mask)
     assert not result.accepted
+
+
+def test_similar_window_details_are_matched_at_their_own_positions(monkeypatch):
+    # The main feature in each window looks more like its counterpart in the
+    # distant window. Each location also has a second descriptor for the ratio test.
+    positions = np.float32([(64, 80), (72, 84), (208, 80), (216, 84)])
+    reference_descriptors = np.vstack(
+        [
+            np.zeros(32, np.uint8),
+            np.full(32, 255, np.uint8),
+            np.array([255] + [0] * 31, np.uint8),
+            np.full(32, 170, np.uint8),
+        ]
+    )
+    source_descriptors = reference_descriptors.copy()
+    source_descriptors[0, 0] = 254
+    source_descriptors[2, 0] = 1
+    shift = np.array([2, 1], dtype=np.float32)
+    features = iter(
+        [
+            ([cv2.KeyPoint(*point, 7) for point in positions], reference_descriptors),
+            (
+                [cv2.KeyPoint(*point, 7) for point in positions + shift],
+                source_descriptors,
+            ),
+        ]
+    )
+
+    class WindowFeatures:
+        def detectAndCompute(self, image, mask):
+            return next(features)
+
+    monkeypatch.setattr(cv2, "ORB_create", lambda **kwargs: WindowFeatures())
+    image = np.zeros((240, 320), dtype=np.uint8)
+    mask = np.full_like(image, 255)
+    source, reference, ratio = _orb_matches(image, image, mask)
+
+    assert ratio == 1.0
+    np.testing.assert_array_equal(reference, positions)
+    np.testing.assert_array_equal(source, positions + shift)
+
+
+def test_automatic_registration_can_diagnose_a_shift_outside_the_search_window():
+    reference = _texture()
+    source = _shift(reference, dx=80, dy=0)
+    mask = np.full(reference.shape[:2], 255, dtype=np.uint8)
+    result = register_background(reference, source, mask)
+
+    assert not result.accepted
+    assert result.failure_reasons == ("camera_view_changed",)
+    np.testing.assert_allclose(np.array(result.matrix)[:, 2], (-80, 0), atol=0.25)
 
 
 def test_textured_moving_object_in_one_small_region_is_not_background_evidence():

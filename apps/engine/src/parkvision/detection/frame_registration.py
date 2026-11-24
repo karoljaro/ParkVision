@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from hashlib import sha256
-from math import atan2, degrees, hypot
+from math import atan2, ceil, cos, degrees, hypot, radians, sqrt
 
 import cv2
 import numpy as np
@@ -42,6 +42,17 @@ class Registration:
 
 
 IDENTITY = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+MAX_SCALE_CHANGE = 0.005
+MAX_ROTATION_DEGREES = 0.75
+CORNER_REFINEMENT_RADIUS_PX = 3
+
+
+def _translation_limit(width, height):
+    return max(8, 0.012 * hypot(width, height))
+
+
+def _refinement_shift_limit(ratio):
+    return max(4, 4 / ratio)
 
 
 def _coverage(points, width, height):
@@ -202,9 +213,9 @@ def _evaluate(
     angle = abs(degrees(atan2(matrix[1, 0], matrix[0, 0])))
     shift = hypot(matrix[0, 2], matrix[1, 2])
     if (
-        abs(scale - 1) > 0.005
-        or angle > 0.75
-        or shift > max(8, 0.012 * hypot(width, height))
+        abs(scale - 1) > MAX_SCALE_CHANGE
+        or angle > MAX_ROTATION_DEGREES
+        or shift > _translation_limit(width, height)
     ):
         failures.append("camera_view_changed")
     records = tuple(
@@ -323,7 +334,33 @@ def _control_registration(reference, image, controls):
     )
 
 
-def _orb_matches(reference, image, mask):
+def _orb_candidate_mask(source, target, width, height, ratio):
+    # A bounded similarity can move each point by at most the translation limit
+    # plus the effect of scale and rotation at its distance from the origin.
+    angle = radians(MAX_ROTATION_DEGREES)
+    relative_motion = sqrt(
+        MAX_SCALE_CHANGE**2 + 2 * (1 + MAX_SCALE_CHANGE) * (1 - cos(angle))
+    )
+    # ORB observes initial locations, before native corner and flow refinement.
+    refinement_margin = _refinement_shift_limit(ratio) + ceil(
+        hypot(CORNER_REFINEMENT_RADIUS_PX, CORNER_REFINEMENT_RADIUS_PX)
+    )
+    radius = (
+        _translation_limit(width, height)
+        + relative_motion * np.linalg.norm(source, axis=1)
+        + refinement_margin
+    )
+    allowed = np.empty((len(source), len(target)), dtype=np.uint8)
+    # Keep the mask dense for OpenCV but bound temporary coordinate arrays.
+    for start in range(0, len(source), 128):
+        block = slice(start, start + 128)
+        delta = source[block, None, :] - target[None, :, :]
+        distance_squared = np.einsum("ijk,ijk->ij", delta, delta)
+        np.less_equal(distance_squared, radius[block, None] ** 2, out=allowed[block])
+    return allowed
+
+
+def _orb_matches(reference, image, mask, *, limit_displacement=True):
     height, width = reference.shape
     ratio = min(1.0, 1200 / max(height, width))
     size = (round(width * ratio), round(height * ratio))
@@ -337,8 +374,18 @@ def _orb_matches(reference, image, mask):
     sk, sd = orb.detectAndCompute(src, selected)
     if rd is None or sd is None or len(rd) < 2 or len(sd) < 2:
         return np.empty((0, 2)), np.empty((0, 2)), 0.0
+    # OpenCV resize maps pixel centers. Do not magnify its half-pixel offset.
+    factor = np.array([width / size[0], height / size[1]])
+    target = (np.float64([key.pt for key in rk]) + 0.5) * factor - 0.5
+    source = (np.float64([key.pt for key in sk]) + 0.5) * factor - 0.5
+    allowed = (
+        _orb_candidate_mask(source, target, width, height, ratio)
+        if limit_displacement
+        else None
+    )
+    reverse_allowed = None if allowed is None else np.ascontiguousarray(allowed.T)
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-    backward = matcher.knnMatch(rd, sd, k=2)
+    backward = matcher.knnMatch(rd, sd, k=2, mask=reverse_allowed)
     reverse = {
         a.queryIdx: a.trainIdx
         for entry in backward
@@ -346,7 +393,7 @@ def _orb_matches(reference, image, mask):
         for a, b in [entry]
         if a.distance < 0.75 * b.distance
     }
-    forward = matcher.knnMatch(sd, rd, k=2)
+    forward = matcher.knnMatch(sd, rd, k=2, mask=allowed)
     matches = [
         a
         for entry in forward
@@ -354,15 +401,11 @@ def _orb_matches(reference, image, mask):
         for a, b in [entry]
         if a.distance < 0.75 * b.distance and reverse.get(a.trainIdx) == a.queryIdx
     ]
-    # OpenCV resize maps pixel centers. Do not magnify its half-pixel offset.
-    factor = np.array([width / size[0], height / size[1]])
-    target = (
-        np.float64([rk[m.trainIdx].pt for m in matches]).reshape(-1, 2) + 0.5
-    ) * factor - 0.5
-    source = (
-        np.float64([sk[m.queryIdx].pt for m in matches]).reshape(-1, 2) + 0.5
-    ) * factor - 0.5
-    return source, target, ratio
+    return (
+        source[[match.queryIdx for match in matches]],
+        target[[match.trainIdx for match in matches]],
+        ratio,
+    )
 
 
 def _refine(reference, image, source, target, ratio):
@@ -374,7 +417,7 @@ def _refine(reference, image, source, target, ratio):
     cv2.cornerSubPix(
         reference,
         target,
-        (3, 3),
+        (CORNER_REFINEMENT_RADIUS_PX, CORNER_REFINEMENT_RADIUS_PX),
         (-1, -1),
         (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     )
@@ -399,7 +442,7 @@ def _refine(reference, image, source, target, ratio):
     source, target = source.reshape(-1, 2), target.reshape(-1, 2)
     good = status.ravel().astype(bool) & reverse.ravel().astype(bool)
     good &= np.linalg.norm(back.reshape(-1, 2) - target, axis=1) <= 0.75
-    good &= np.linalg.norm(source - original, axis=1) <= max(4, 4 / ratio)
+    good &= np.linalg.norm(source - original, axis=1) <= _refinement_shift_limit(ratio)
     height, width = reference.shape
     indices = []
     for i in np.flatnonzero(good):
@@ -483,7 +526,28 @@ def register_background(
         raise ValueError("Fit and validation masks must be disjoint")
     gray = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
     src_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    source, target, ratio = _orb_matches(gray, src_gray, background_mask)
+    result = _register_automatic(
+        gray, src_gray, background_mask, validation_mask, limit_displacement=True
+    )
+    if result.accepted or result.failure_reasons == ("camera_view_changed",):
+        return result
+    # Points can move beyond the local search after a real camera change.
+    # Global matches may diagnose that change only when every other check holds.
+    diagnostic = _register_automatic(
+        gray, src_gray, background_mask, validation_mask, limit_displacement=False
+    )
+    return (
+        diagnostic if diagnostic.failure_reasons == ("camera_view_changed",) else result
+    )
+
+
+def _register_automatic(
+    gray, src_gray, background_mask, validation_mask, *, limit_displacement
+):
+    height, width = gray.shape
+    source, target, ratio = _orb_matches(
+        gray, src_gray, background_mask, limit_displacement=limit_displacement
+    )
     raw = len(source)
     if raw < 25:
         return Registration(
@@ -521,7 +585,9 @@ def register_background(
     )
     provenance = "automatic_spatial_holdout_same_features_not_independent_ground_truth"
     if validation_mask is not None:
-        cs, ct, cr = _orb_matches(gray, src_gray, validation_mask)
+        cs, ct, cr = _orb_matches(
+            gray, src_gray, validation_mask, limit_displacement=limit_displacement
+        )
         cs, ct = _refine(gray, src_gray, cs, ct, cr)
         cs, ct = _distinct_points(cs, ct)
         if len(cs) < 6:
@@ -571,7 +637,7 @@ def register_background(
         check,
         matrix,
         good,
-        reference.shape,
+        gray.shape,
         method="orb_native_holdout",
         raw_matches=raw,
         provenance=provenance,
