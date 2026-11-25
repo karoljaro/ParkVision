@@ -408,12 +408,116 @@ def _orb_matches(reference, image, mask, *, limit_displacement=True):
     )
 
 
+def _quadratic_peak_offset(scores, x, y):
+    """Locate the subpixel peak of the local two-dimensional quadratic."""
+    center = scores[y, x]
+    dx = (scores[y, x + 1] - scores[y, x - 1]) / 2
+    dy = (scores[y + 1, x] - scores[y - 1, x]) / 2
+    xx = scores[y, x + 1] + scores[y, x - 1] - 2 * center
+    yy = scores[y + 1, x] + scores[y - 1, x] - 2 * center
+    xy = (
+        scores[y + 1, x + 1]
+        - scores[y + 1, x - 1]
+        - scores[y - 1, x + 1]
+        + scores[y - 1, x - 1]
+    ) / 4
+    determinant = xx * yy - xy * xy
+    if xx >= 0 or determinant <= 0:
+        return None
+    offset = np.array([(xy * dy - yy * dx), (xy * dx - xx * dy)]) / determinant
+    return offset if np.max(np.abs(offset)) <= 1 else None
+
+
+def _normalized_patch(image, point, size):
+    patch = cv2.getRectSubPix(image, (size, size), tuple(point)).ravel()
+    patch -= patch.mean()
+    norm = np.linalg.norm(patch)
+    return patch / max(float(norm), 1e-6)
+
+
+def _fit_subpixel_patch(reference, image, point, position, size):
+    # Compare actual pixels in the sample with an interpolated reference.
+    # Resampling both sides or resampling an already softened source is biased
+    # in the immediate neighborhood of an integer translation.
+    sample_center = np.rint(position)
+    center = sample_center - position + point
+    sample = _normalized_patch(image, sample_center, size)
+    offset = np.zeros(2)
+    epsilon = 1 / 32
+    for _ in range(4):
+        estimate = _normalized_patch(reference, center - offset, size)
+        residual = sample - estimate
+        derivatives = np.column_stack(
+            [
+                (
+                    _normalized_patch(reference, center - offset - delta, size)
+                    - _normalized_patch(reference, center - offset + delta, size)
+                )
+                / (2 * epsilon)
+                for delta in np.eye(2) * epsilon
+            ]
+        )
+        step, _, rank, _ = np.linalg.lstsq(derivatives, residual, rcond=None)
+        if rank < 2 or np.linalg.norm(offset + step) > 0.75:
+            return None
+        offset += step
+        if np.linalg.norm(step) < 0.002:
+            break
+    return position + offset
+
+
+def _match_normalized_patch(reference, image, point, seed, limit, radius, grid):
+    size = 21
+    height, width = image.shape
+    # Sample both images at the same subpixel phase for integer translations.
+    center = point + np.rint(seed - point)
+    for (x, y), margin in ((point, size // 2 + 1), (center, size // 2 + radius + 1)):
+        if not (margin <= x < width - margin and margin <= y < height - margin):
+            return None
+
+    template = cv2.getRectSubPix(reference, (size, size), tuple(point))
+    contrast = float(template.std())
+    if contrast < 3:
+        return None
+    search_size = size + 2 * radius
+    search = cv2.getRectSubPix(image, (search_size, search_size), tuple(center))
+    scores = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+    _, peak, _, (x, y) = cv2.minMaxLoc(scores)
+    if peak < 0.85 or not (0 < x < 2 * radius and 0 < y < 2 * radius):
+        return None
+
+    # Compare the best peak with other plausible locations in the search.
+    # After fitting gain and offset, the RMS is std(template) * sqrt(1 - NCC²).
+    # Two locations within one 8-bit intensity level of each other are ambiguous.
+    far = (grid - x) ** 2 + (grid[:, None] - y) ** 2 >= 4
+    competing = max(0.0, float(scores[far].max()))
+    best_rms = sqrt(max(0, 1 - peak**2))
+    other_rms = sqrt(max(0, 1 - competing**2))
+    offset = _quadratic_peak_offset(scores, x, y)
+    if offset is None or contrast * (other_rms - best_rms) < 1.0:
+        return None
+
+    integer_position = center + np.array([x - radius, y - radius])
+    position = integer_position + offset
+    score = _patch_score(reference, image, position, point, size)
+    integer_score = _patch_score(reference, image, integer_position, point, size)
+    if integer_score > score:
+        position, score = integer_position, integer_score
+    if np.linalg.norm(position - seed) > limit or score < 0.85:
+        return None
+
+    refined = _fit_subpixel_patch(reference, image, point, position, size)
+    if refined is None or np.linalg.norm(refined - seed) > limit:
+        return None
+    if _patch_score(reference, image, refined, point, size) < 0.85:
+        return None
+    return refined
+
+
 def _refine(reference, image, source, target, ratio):
     if not len(source):
         return source, target
-    original = source.copy()
     target = np.float32(target).reshape(-1, 1, 2)
-    # Refine the reference corner, then track its same local appearance natively.
     cv2.cornerSubPix(
         reference,
         target,
@@ -421,42 +525,31 @@ def _refine(reference, image, source, target, ratio):
         (-1, -1),
         (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     )
-    source, status, _ = cv2.calcOpticalFlowPyrLK(
-        reference,
-        image,
-        target,
-        np.float32(source).reshape(-1, 1, 2),
-        winSize=(21, 21),
-        maxLevel=3,
-        flags=cv2.OPTFLOW_USE_INITIAL_FLOW,
-    )
-    back, reverse, _ = cv2.calcOpticalFlowPyrLK(
-        image,
-        reference,
-        source,
-        target.copy(),
-        winSize=(21, 21),
-        maxLevel=3,
-        flags=cv2.OPTFLOW_USE_INITIAL_FLOW,
-    )
-    source, target = source.reshape(-1, 2), target.reshape(-1, 2)
-    good = status.ravel().astype(bool) & reverse.ravel().astype(bool)
-    good &= np.linalg.norm(back.reshape(-1, 2) - target, axis=1) <= 0.75
-    good &= np.linalg.norm(source - original, axis=1) <= _refinement_shift_limit(ratio)
-    height, width = reference.shape
-    indices = []
-    for i in np.flatnonzero(good):
-        a, b = source[i], target[i]
-        if not all(6 <= p[0] < width - 6 and 6 <= p[1] < height - 6 for p in (a, b)):
+    reference, image = reference.astype(np.float32), image.astype(np.float32)
+    limit = _refinement_shift_limit(ratio)
+    # Include a border for peak interpolation and the half-pixel grid offset.
+    radius = ceil(limit + 0.5) + 1
+    grid = np.arange(2 * radius + 1)
+    matched_source, matched_target = [], []
+    for seed, point in zip(source, target.reshape(-1, 2), strict=True):
+        match = _match_normalized_patch(
+            reference, image, point, seed, limit, radius, grid
+        )
+        if match is None:
             continue
-        first = cv2.getRectSubPix(reference, (11, 11), tuple(b)).astype(float)
-        second = cv2.getRectSubPix(image, (11, 11), tuple(a)).astype(float)
-        first -= first.mean()
-        second -= second.mean()
-        norm = np.linalg.norm(first) * np.linalg.norm(second)
-        if norm > 1 and float(np.sum(first * second)) / norm >= 0.85:
-            indices.append(i)
-    return source[indices].astype(float), target[indices].astype(float)
+        back = _match_normalized_patch(
+            image, reference, match, point, limit, radius, grid
+        )
+        if back is None or np.linalg.norm(back - point) > 0.75:
+            continue
+        if _patch_score(reference, image, match, point, 11) < 0.85:
+            continue
+        matched_source.append(match)
+        matched_target.append(point)
+    return (
+        np.float64(matched_source).reshape(-1, 2),
+        np.float64(matched_target).reshape(-1, 2),
+    )
 
 
 def _distinct_points(source, target, minimum=12.0):

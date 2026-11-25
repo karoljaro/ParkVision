@@ -109,6 +109,19 @@ def test_rejects_supported_change_with_same_image_dimensions(
     assert source.shape == reference.image.shape
 
 
+def test_light_change_does_not_hide_diagonal_motion_above_native_limit(
+    tmp_path, configuration
+):
+    reference = _load(_manifest(tmp_path, configuration), configuration)
+    transform = np.float32([[1, 0, -1.0625], [0, 1, -1.0625]])
+    shifted = cv2.warpAffine(reference.image, transform, (WIDTH, HEIGHT))
+    source = cv2.convertScaleAbs(shifted, alpha=0.8, beta=12)
+
+    result = reference.check(source)
+    assert result.status == "mismatch", result
+    assert result.diagnostics["max_roi_displacement_px"] > 1.5
+
+
 def test_missing_features_are_not_evidence_of_moved_camera(tmp_path, configuration):
     reference = _load(_manifest(tmp_path, configuration), configuration)
     result = reference.check(np.full_like(reference.image, 75))

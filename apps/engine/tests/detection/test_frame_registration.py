@@ -7,7 +7,11 @@ import cv2
 import numpy as np
 import pytest
 
-from parkvision.detection.frame_registration import _orb_matches, register_background
+from parkvision.detection.frame_registration import (
+    _orb_matches,
+    _refine,
+    register_background,
+)
 
 
 def _texture(size=(640, 480), seed=23):
@@ -74,6 +78,48 @@ def test_auto_registration_handles_illumination_without_camera_motion():
     assert result.accepted, result
     assert np.allclose(np.array(result.matrix), [[1, 0, 0], [0, 1, 0]], atol=0.2)
     assert result.validation_p90_px <= 1.5
+
+
+def test_local_refinement_keeps_brightness_shift_from_moving_the_edge():
+    y, x = np.indices((240, 320), dtype=float)
+    edge = 105 + 95 / (1 + np.exp(-(x - 155 + 0.5 * (y - 120)) / 3))
+    noise = cv2.GaussianBlur(
+        np.random.default_rng(13).normal(0, 1, edge.shape), (0, 0), 1.5
+    )
+    detail = 10 * np.exp(-((x - 164) ** 2 + (y - 132) ** 2) / 30)
+    reference = np.uint8(np.clip(edge + 18 * noise + detail, 0, 255))
+    darker = np.uint8(np.clip(reference.astype(np.int16) - 17, 0, 255))
+    seed = np.float64([[155, 120]])
+
+    # The legacy LK track drifted 3.34 px and passed its FB and NCC tests.
+    source, target = _refine(reference, darker, seed, seed, 1.0)
+    assert len(source) == 1
+    np.testing.assert_allclose(source, target, atol=0.1)
+
+
+def test_local_refinement_preserves_real_subpixel_motion_in_changed_light():
+    reference = cv2.cvtColor(_texture(), cv2.COLOR_BGR2GRAY)
+    motion = np.array([2.5, -1.75])
+    frame = cv2.convertScaleAbs(_shift(reference, *motion), alpha=0.8, beta=12)
+    reference_seeds = np.float64([[120, 140], [270, 280], [450, 380]])
+    source_seeds = reference_seeds + [2, -1]
+
+    source, target = _refine(reference, frame, source_seeds, reference_seeds, 1.0)
+    assert len(source) >= 2
+    assert np.max(np.linalg.norm(source - target - motion, axis=1)) < 0.12
+
+
+@pytest.mark.parametrize("periodic", (False, True), ids=["edge", "repeated-corners"])
+def test_local_refinement_rejects_equally_plausible_positions(periodic):
+    y, x = np.indices((240, 320))
+    if periodic:
+        image = np.uint8(125 + 35 * np.cos(x * np.pi / 2) + 40 * np.cos(y * np.pi / 2))
+    else:
+        image = np.uint8(65 + 110 / (1 + np.exp(-(x - 154.5) / 3)))
+    seed = np.float64([[155, 120]])
+
+    source, target = _refine(image, image.copy(), seed, seed, 1.0)
+    assert source.shape == target.shape == (0, 2)
 
 
 def test_periodic_markings_do_not_prove_a_unique_correspondence():
