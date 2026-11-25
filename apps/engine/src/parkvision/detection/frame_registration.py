@@ -514,7 +514,19 @@ def _match_normalized_patch(reference, image, point, seed, limit, radius, grid):
     return refined
 
 
-def _refine(reference, image, source, target, ratio):
+def _refine_match(reference, image, seed, point, limit, radius, grid):
+    match = _match_normalized_patch(reference, image, point, seed, limit, radius, grid)
+    if match is None:
+        return None
+    back = _match_normalized_patch(image, reference, match, point, limit, radius, grid)
+    if back is None or np.linalg.norm(back - point) > 0.75:
+        return None
+    if _patch_score(reference, image, match, point, 11) < 0.85:
+        return None
+    return match
+
+
+def _refine(reference, image, source, target, ratio, *, local_matches=None):
     if not len(source):
         return source, target
     target = np.float32(target).reshape(-1, 1, 2)
@@ -532,20 +544,16 @@ def _refine(reference, image, source, target, ratio):
     grid = np.arange(2 * radius + 1)
     matched_source, matched_target = [], []
     for seed, point in zip(source, target.reshape(-1, 2), strict=True):
-        match = _match_normalized_patch(
-            reference, image, point, seed, limit, radius, grid
-        )
-        if match is None:
-            continue
-        back = _match_normalized_patch(
-            image, reference, match, point, limit, radius, grid
-        )
-        if back is None or np.linalg.norm(back - point) > 0.75:
-            continue
-        if _patch_score(reference, image, match, point, 11) < 0.85:
-            continue
-        matched_source.append(match)
-        matched_target.append(point)
+        key = (*seed, *point, ratio)
+        if local_matches is not None and key in local_matches:
+            match = local_matches[key]
+        else:
+            match = _refine_match(reference, image, seed, point, limit, radius, grid)
+            if local_matches is not None:
+                local_matches[key] = match
+        if match is not None:
+            matched_source.append(match)
+            matched_target.append(point)
     return (
         np.float64(matched_source).reshape(-1, 2),
         np.float64(matched_target).reshape(-1, 2),
@@ -619,15 +627,28 @@ def register_background(
         raise ValueError("Fit and validation masks must be disjoint")
     gray = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
     src_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # The diagnostic pass can reach the same seed pair with the same images.
+    # Reuse only its image-based result, separately per mask and per frame.
+    local_matches = ({}, {})
     result = _register_automatic(
-        gray, src_gray, background_mask, validation_mask, limit_displacement=True
+        gray,
+        src_gray,
+        background_mask,
+        validation_mask,
+        limit_displacement=True,
+        local_matches=local_matches,
     )
     if result.accepted or result.failure_reasons == ("camera_view_changed",):
         return result
     # Points can move beyond the local search after a real camera change.
     # Global matches may diagnose that change only when every other check holds.
     diagnostic = _register_automatic(
-        gray, src_gray, background_mask, validation_mask, limit_displacement=False
+        gray,
+        src_gray,
+        background_mask,
+        validation_mask,
+        limit_displacement=False,
+        local_matches=local_matches,
     )
     return (
         diagnostic if diagnostic.failure_reasons == ("camera_view_changed",) else result
@@ -635,8 +656,15 @@ def register_background(
 
 
 def _register_automatic(
-    gray, src_gray, background_mask, validation_mask, *, limit_displacement
+    gray,
+    src_gray,
+    background_mask,
+    validation_mask,
+    *,
+    limit_displacement,
+    local_matches,
 ):
+    fit_matches, check_matches = local_matches
     height, width = gray.shape
     source, target, ratio = _orb_matches(
         gray, src_gray, background_mask, limit_displacement=limit_displacement
@@ -653,7 +681,9 @@ def _register_automatic(
             matches=raw,
             raw_matches=raw,
         )
-    source, target = _refine(gray, src_gray, source, target, ratio)
+    source, target = _refine(
+        gray, src_gray, source, target, ratio, local_matches=fit_matches
+    )
     source, target = _distinct_points(source, target)
     # Always withhold spatially interleaved points, even with extra check regions.
     # Extra regions ADD checks; they never replace or weaken the global holdout.
@@ -681,7 +711,7 @@ def _register_automatic(
         cs, ct, cr = _orb_matches(
             gray, src_gray, validation_mask, limit_displacement=limit_displacement
         )
-        cs, ct = _refine(gray, src_gray, cs, ct, cr)
+        cs, ct = _refine(gray, src_gray, cs, ct, cr, local_matches=check_matches)
         cs, ct = _distinct_points(cs, ct)
         if len(cs) < 6:
             return Registration(

@@ -109,6 +109,34 @@ def test_local_refinement_preserves_real_subpixel_motion_in_changed_light():
     assert np.max(np.linalg.norm(source - target - motion, axis=1)) < 0.12
 
 
+def test_local_refinement_reuses_only_previously_evaluated_pairs(monkeypatch):
+    from parkvision.detection import frame_registration
+
+    reference = cv2.cvtColor(_texture(), cv2.COLOR_BGR2GRAY)
+    seeds = np.float64([[120, 140], [4, 4]])
+    cached = {}
+    first = _refine(reference, reference, seeds, seeds, 1.0, local_matches=cached)
+    assert len(first[0]) == 1
+    assert len(cached) == 2
+    assert sum(match is None for match in cached.values()) == 1
+
+    local_match = frame_registration._refine_match
+    seen = []
+
+    def record_match(reference, image, seed, point, limit, radius, grid):
+        seen.append(tuple(seed))
+        return local_match(reference, image, seed, point, limit, radius, grid)
+
+    monkeypatch.setattr(frame_registration, "_refine_match", record_match)
+    updated = np.vstack((seeds[::-1], [[400, 260]]))
+    repeated = _refine(
+        reference, reference, updated, updated, 1.0, local_matches=cached
+    )
+    assert seen == [(400, 260)]
+    for before, after in zip(first, repeated, strict=True):
+        np.testing.assert_array_equal(before[0], after[0])
+
+
 @pytest.mark.parametrize("periodic", (False, True), ids=["edge", "repeated-corners"])
 def test_local_refinement_rejects_equally_plausible_positions(periodic):
     y, x = np.indices((240, 320))
